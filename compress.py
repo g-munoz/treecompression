@@ -10,8 +10,8 @@ import time
 from queue import Queue
 from disjunction import *
 
-nodetimelimit = 60
-globaltimelimit = 300
+nodetimelimit = 300
+globaltimelimit = 3600
 restrictedsupp = False
 starttime = 0
 
