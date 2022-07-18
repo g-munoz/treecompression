@@ -38,7 +38,6 @@ def downtreesearch(node, tree):
 	return nodecount
 	
 def uptreesearch(tree):
-
 	Q = Queue()
 	remaining_children = {}
 	success_mem = set()
@@ -63,13 +62,16 @@ def uptreesearch(tree):
 			#print("INFO: Success",node)
 			print("INFO: Subtree rooted at", node, "compressed")
 			success_mem.add(node)
-			parent = tree["nodes"][node]["parent"]
+			
+		#else:
+		#	print("Failed",node)
+		#	#input()
+		
+		parent = tree["nodes"][node]["parent"]
+		if parent != None :
 			remaining_children[parent] = remaining_children[parent] - 1 ## decrease the parent count 
 			if remaining_children[parent] == 0: ## parent is added to queue if all its children are done
 				Q.put(parent)
-		else:
-			print("Failed",node)
-			#input()
 
 	nodecount = countupcompression(tree,str(0),success_mem)
 
@@ -177,5 +179,5 @@ if not args.upsearch:
 else:
 	nodecount = uptreesearch(tree)
 
-print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch)
+print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime)
 

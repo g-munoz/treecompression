@@ -191,9 +191,9 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit):
 		#print("\nNo disjuction found\n")
 		return 0, None, None
 	
-	#print("Gurobi output", pi.X, pi0.X)
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [pi[i].X for i in range(len(pi))]
+	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
 	return 1, np.round(solX), np.round(pi0.X)
 
 
