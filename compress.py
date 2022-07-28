@@ -18,29 +18,36 @@ starttime = 0
 def downtreesearch(node, tree):
 
 	nodecount = 1
+	nodesvisited = 1
+	
 	children = tree["nodes"][node]["children"]	
 	if len(children) == 0:
 		print("INFO: Reached leaf", node)
-		return nodecount
+		return nodecount, nodesvisited
 
 	if time.time() - starttime < globaltimelimit: #if we still have some time left
 		
 		success = main(node,tree)
 	else:
 		success = False
+		nodesvisited = 0
 		
 	if success:
 		print("INFO: Subtree rooted at", node, "compressed")
+		nodecount = nodecount + 2 #we add 2, since the compression is done via a disjunction that would create to children. Note that here we are not on a leaf.
 	else:
 		for i in children:
-			nodecount = nodecount + downtreesearch(i, tree) ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
+			nodecount_down, nodesvisited_down = downtreesearch(i, tree) ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
+			nodecount = nodecount + nodecount_down ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
+			nodesvisited = nodesvisited + nodesvisited_down
 
-	return nodecount
+	return nodecount, nodesvisited
 	
 def uptreesearch(tree):
 	Q = Queue()
 	remaining_children = {}
 	success_mem = set()
+	nodesvisited = 0
 
 	for i in tree["nodes"]:
 		remaining_children[i] = len(tree["nodes"][i]["children"]) # we store the number of children remaining to "succeed"
@@ -58,6 +65,9 @@ def uptreesearch(tree):
 			success = True
 		else:
 			success = main(node,tree)
+			
+		nodesvisited += 1
+		
 		if success:
 			#print("INFO: Success",node)
 			print("INFO: Subtree rooted at", node, "compressed")
@@ -75,7 +85,7 @@ def uptreesearch(tree):
 
 	nodecount = countupcompression(tree,str(0),success_mem)
 
-	return nodecount
+	return nodecount, nodesvisited
 	
 def countupcompression(tree,node,success_mem):
 
@@ -87,6 +97,8 @@ def countupcompression(tree,node,success_mem):
 	if node not in success_mem:
 		for i in children:
 			nodecount = nodecount + countupcompression(tree,i,success_mem)
+	else:
+		nodecount = nodecount + 2 #in the successful case, non-leaf, the compression uses 2 extra nodes.
 			
 	return nodecount
 
@@ -173,11 +185,12 @@ if args.globaltime != None:
 	globaltimelimit = args.globaltime
 
 starttime = time.time()
+nodesvisited = 0
 
 if not args.upsearch:
-	nodecount = downtreesearch(str(0),tree)
+	nodecount, nodesvisited = downtreesearch(str(0),tree)
 else:
-	nodecount = uptreesearch(tree)
+	nodecount, nodesvisited = uptreesearch(tree)
 
-print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime)
+print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes Visited=",nodesvisited)
 
