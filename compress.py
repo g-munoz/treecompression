@@ -14,8 +14,27 @@ nodetimelimit = 300
 globaltimelimit = 3600
 restrictedsupp = False
 starttime = 0
+drop = True
+usesubtreebound = False
+
+dropnodecount = 0
+compressnodecount = 0
+
+def canbeDropped(node,tree):
+	subtreebnd = float(tree["nodes"][node]["subtree_bound"])
+	globalbnd = float(tree["nodes"]["0"]["subtree_bound"])
+
+	if tree["sense"] == "min" and subtreebnd > globalbnd :
+		return True
+	if tree["sense"] == "max" and subtreebnd < globalbnd :
+		return True
+
+	return False
 
 def downtreesearch(node, tree):
+
+	global compressnodecount
+	global dropnodecount
 
 	nodecount = 1
 	nodesvisited = 1
@@ -25,8 +44,11 @@ def downtreesearch(node, tree):
 		print("INFO: Reached leaf", node)
 		return nodecount, nodesvisited
 
-	if time.time() - starttime < globaltimelimit: #if we still have some time left
-		
+	if drop and canbeDropped(node,tree):
+		dropnodecount += 1
+		return nodecount, nodesvisited
+
+	if time.time() - starttime < globaltimelimit: #if we still have some time left	
 		success = main(node,tree)
 	else:
 		success = False
@@ -34,6 +56,7 @@ def downtreesearch(node, tree):
 		
 	if success:
 		print("INFO: Subtree rooted at", node, "compressed")
+		compressnodecount += 1
 		nodecount = nodecount + 2 #we add 2, since the compression is done via a disjunction that would create to children. Note that here we are not on a leaf.
 	else:
 		for i in children:
@@ -59,19 +82,23 @@ def uptreesearch(tree):
 		node = Q.get() #this queue should only have nodes whose children all succeeded. We might want to change this
 		
 		print("INFO: Processing",node)
-		success = False
+		success = 0
 		
 		if len(tree["nodes"][node]["children"]) == 0: #leaves are compressed, so we don't run anything. This is a bit ugly
-			success = True
+			success = 2
 		else:
-			success = main(node,tree)
+			canDrop = drop and canbeDropped(node,tree)
+			if canDrop: 
+				success = 2
+			else:
+				success = main(node,tree)
 			
 		nodesvisited += 1
 		
 		if success:
 			#print("INFO: Success",node)
 			print("INFO: Subtree rooted at", node, "compressed")
-			success_mem.add(node)
+			success_mem.add((node,success)) #there can be two types of success: drop or disjunction
 			
 		#else:
 		#	print("Failed",node)
@@ -88,18 +115,22 @@ def uptreesearch(tree):
 	return nodecount, nodesvisited
 	
 def countupcompression(tree,node,success_mem):
-
+	global compressnodecount
+	global dropnodecount
 	nodecount = 1
 	children = tree["nodes"][node]["children"]	
 	if len(children) == 0:
 		return nodecount
 
-	if node not in success_mem:
+	if (node,1) in success_mem:
+		nodecount = nodecount + 2 #in the successful case, non-leaf, the compression uses 2 extra nodes
+		compressnodecount+= 1
+	elif (node,2) in success_mem: #the drop case does no add
+		dropnodecount += 1
+	else: 
 		for i in children:
 			nodecount = nodecount + countupcompression(tree,i,success_mem)
-	else:
-		nodecount = nodecount + 2 #in the successful case, non-leaf, the compression uses 2 extra nodes.
-			
+		
 	return nodecount
 
 def main(node_id, tree):
@@ -134,12 +165,16 @@ def main(node_id, tree):
 	#model.write(nodefilename)
 	
 	subtreesupp = tree["nodes"][node_id]["subtree_support"]
-	subtreebound = tree["nodes"][node_id]["subtree_bound"]
+
+	if usesubtreebound:
+		bound = tree["nodes"][node_id]["subtree_bound"]
+	else:
+		bound = tree["nodes"]["0"]["subtree_bound"] #use root node bound (loosest)
 	
 	args = []
 	#args.append(nodefilename)
 	args.append(model)
-	args.append(str(subtreebound))
+	args.append(str(bound))
 	
 	#restrict support if requires
 	if restrictedsupp:
@@ -168,6 +203,12 @@ parser.add_argument('--restrictedsupp', action='store_true',
 parser.add_argument('--upsearch', action='store_true',
                     help='Do tree search from bottom to top')
 
+parser.add_argument('--nodrop', action='store_true',
+                    help='Disable drop operation')
+
+parser.add_argument('--usesubtreebound', action='store_true',
+                    help='Use subtree bound instead of global dual bound')
+
 args = parser.parse_args()
 
 modelname = args.filename
@@ -184,6 +225,11 @@ if args.nodetime != None:
 if args.globaltime != None:
 	globaltimelimit = args.globaltime
 
+if args.nodrop:
+	drop = False
+if args.usesubtreebound:
+	usesubtreebound = True
+
 starttime = time.time()
 nodesvisited = 0
 
@@ -192,5 +238,5 @@ if not args.upsearch:
 else:
 	nodecount, nodesvisited = uptreesearch(tree)
 
-print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes Visited=",nodesvisited)
+print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
 
