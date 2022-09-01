@@ -66,7 +66,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit):
 			intvars.add(var.index)
 	
 	### set-up of disj model ###
-	M = GRB.INFINITY
+	M = 1
 	
 	disj = Model()
 	disj.setParam("OutputFlag",0)
