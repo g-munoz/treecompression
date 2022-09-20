@@ -17,6 +17,9 @@ starttime = 0
 drop = True
 usesubtreebound = False
 
+disjcoefbound = GRB.INFINITY
+disjsuppsize = GRB.INFINITY
+
 dropnodecount = 0
 compressnodecount = 0
 
@@ -182,7 +185,7 @@ def main(node_id, tree):
 		for i in subtreesupp:
 			args.append(str(i)) #we accumulate
 	
-	return findDisjunction(args, nodetimelimit)
+	return findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize)
 
 parser = argparse.ArgumentParser(description='Run tree search')
 
@@ -209,12 +212,27 @@ parser.add_argument('--nodrop', action='store_true',
 parser.add_argument('--usesubtreebound', action='store_true',
                     help='Use subtree bound instead of global dual bound')
 
+
+parser.add_argument('--disjcoefbound', type=int,
+                    help='Disjunction coefficient bound')
+
+parser.add_argument('--disjsuppsize', type=int,
+                    help='Disjunction support size')
+
+parser.add_argument('--treename', help='Tree to compress')
+
 args = parser.parse_args()
 
 modelname = args.filename
+print(modelname)
 model = read(modelname)
 filename, file_extension = modelname.split(os.extsep,1)
+
 jsonname = filename + ".tree.json"
+
+if args.treename != None:
+	jsonname = args.treename
+
 f = open(jsonname)
 tree = json.load(f)
 
@@ -224,6 +242,11 @@ if args.nodetime != None:
 	nodetimelimit = args.nodetime
 if args.globaltime != None:
 	globaltimelimit = args.globaltime
+
+if args.disjcoefbound != None:
+	disjcoefbound = args.disjcoefbound
+if args.disjsuppsize != None:
+	disjsuppsize = args.disjsuppsize
 
 if args.nodrop:
 	drop = False

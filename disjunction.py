@@ -19,7 +19,7 @@ def thresholdcallbak(model, where):
         if objbst > deltathresh:
             model.terminate()
 
-def formulateDisjunctionMIP(model,K,support,nodetimelimit):
+def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize):
 	
 
 	### getting necessary parameters ###
@@ -66,7 +66,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit):
 			intvars.add(var.index)
 	
 	### set-up of disj model ###
-	M = 1
+	M = disjcoefbound
 	
 	disj = Model()
 	disj.setParam("OutputFlag",0)
@@ -177,6 +177,21 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit):
 	
 	#############################
 	
+	if disjsuppsize < GRB.INFINITY:
+		#print("\n\nI should add constraints for a support of size ", disjsuppsize)
+		bigM = 1E5
+		pi_nz = [None for i in range(n)]
+		
+		for i in range(n):
+			pi_nz[i] = disj.addVar(vtype=GRB.BINARY, name="pi_nz%d"%i)
+			disj.addConstr(pi[i] <= bigM*pi_nz[i], name="nz_ub%d"%i)
+			disj.addConstr(pi[i] >= -bigM*pi_nz[i], name="nz_lb%d"%i)
+
+		disj.addConstr(np.sum(pi_nz) <= disjsuppsize)
+		#pi0_nz = disj.addVar(vtype=GRB.BINARY, name="pirhs_nz")
+		
+	###################
+
 	disj.update()
 
 	#disj.write('disj.lp')
@@ -197,7 +212,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit):
 	return 1, np.round(solX), np.round(pi0.X)
 
 
-def findDisjunction(args, nodetimelimit):
+def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 	
 	#model_orig = read(args[0])
 	model_orig = args[0]
@@ -224,7 +239,7 @@ def findDisjunction(args, nodetimelimit):
 	
 	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0 = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit)
+	success, pi,pi0 = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
