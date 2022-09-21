@@ -243,9 +243,9 @@ if args.nodetime != None:
 if args.globaltime != None:
 	globaltimelimit = args.globaltime
 
-if args.disjcoefbound != None:
+if args.disjcoefbound != None and args.disjcoefbound >= 0: #we use -1 to flag unbounded case
 	disjcoefbound = args.disjcoefbound
-if args.disjsuppsize != None:
+if args.disjsuppsize != None and args.disjsuppsize >= 0: #we use -1 to flag unbounded case
 	disjsuppsize = args.disjsuppsize
 
 if args.nodrop:
