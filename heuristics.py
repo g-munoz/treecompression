@@ -76,7 +76,7 @@ class StrongBranchCompression:
             # Build candidate directions
             directions = []
             for i in frac_idx:
-                directions.append(Direction(pi=x[i], pi_0=frac(xv[i],)))
+                directions.append(Direction(pi=x[i], pi_0=floor(xv[i])))
 
             # Evaluate directions
             best_dir, best_val = _evaluate(model, directions)
@@ -207,8 +207,8 @@ def _evaluate(model: gp.Model, directions: List[Direction]) -> Tuple[Direction, 
 
     best_val, best_dir = float("-inf"), None
     for d in directions:
-        left_val = _value(d.pi <= floor(d.pi_0))
-        right_val = _value(d.pi >= ceil(d.pi_0))
+        left_val = _value(d.pi <= d.pi_0)
+        right_val = _value(d.pi >= d.pi_0 + 1)
         d_val = sense * min(sense * left_val, sense * right_val)
         if d_val > best_val:
             best_val = d_val
