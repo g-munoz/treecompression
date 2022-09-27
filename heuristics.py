@@ -60,7 +60,7 @@ class StrongBranchCompression:
     Compression method that evaluates all single-variable directions.
     """
 
-    def __init__(self, time_limit: int = 30):
+    def __init__(self, time_limit: float = 30):
         self.time_limit = time_limit
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
@@ -81,7 +81,7 @@ class StrongBranchCompression:
             # Check available time
             elapsed_time = time() - initial_time
             if elapsed_time > self.time_limit:
-                raise TimeOutException()
+                raise TimeoutError()
 
             # Check if node can be dropped
             if sense * tree["nodes"][node_id]["obj"] >= sense * globalbnd:
@@ -149,7 +149,7 @@ class OweMeh2001Compression:
 
     """
 
-    def __init__(self, time_limit: int = 30):
+    def __init__(self, time_limit: float = 30):
         self.time_limit = time_limit
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
@@ -264,7 +264,7 @@ class OweMeh2001Compression:
 # -----------------------------------------------------------------------------
 
 
-def run(time_limit=3600) -> None:
+def run(time_limit: float = 3600) -> None:
     def _sample(args: Tuple) -> dict:
         model_filename, method = args
         tree_filename = model_filename.replace("models/", "trees/RB/").replace(
