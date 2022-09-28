@@ -4,13 +4,25 @@ import json
 from copy import deepcopy
 from math import floor, ceil
 from dataclasses import dataclass
-from typing import Union, Callable, Tuple, List, Dict
+from typing import Union, Callable, Tuple, List, Dict, Optional
 from p_tqdm import p_umap
 from glob import glob
 import pandas as pd
 from time import time
-from os.path import exists
+from os.path import exists, dirname
 from random import shuffle
+import logging
+from distutils.dir_util import mkpath
+from queue import Queue
+import re
+import sys
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+stdout_handler = logging.StreamHandler(sys.stdout)
+stdout_handler.setLevel(logging.INFO)
+stdout_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
+logger.addHandler(stdout_handler)
 
 COMPRESSED = 0
 UNCOMPRESSABLE = 1
@@ -36,7 +48,10 @@ class DropCompression:
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         tree = _read_json(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
-        stats["method"] = "Drop"
+        self._compress_inplace(tree, stats)
+        return tree, stats
+
+    def _compress_inplace(self, tree: dict, stats: dict) -> None:
         globalbnd = tree["nodes"]["0"]["subtree_bound"]
         sense = 1 if tree["sense"] == "min" else -1
 
@@ -49,7 +64,6 @@ class DropCompression:
 
         _down_search(tree, stats, callback)
         _stats_finalize(stats, tree)
-        return tree, stats
 
 
 # -----------------------------------------------------------------------------
@@ -67,11 +81,12 @@ class StrongBranchCompression:
         initial_time = time()
         tree = _read_json(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
-        stats["method"] = "StrongBranch"
 
-        model = gp.read(model_filename)
-        model.params.OutputFlag = 0
-        model.params.Threads = 1
+        # Run DropCompression first
+        drop_stats = _stats_init(model_filename, tree_filename, tree)
+        DropCompression()._compress_inplace(tree, drop_stats)
+
+        model = _read_model(model_filename)
         vtype = model.getAttr("vtype", model.getVars())
         sense = model.modelSense
         model = model.relax()
@@ -90,29 +105,113 @@ class StrongBranchCompression:
 
             # Solve LP relaxation of the node
             original_bounds = _set_bounds(model, tree, node_id)
-            elapsed_time = time() - initial_time
-            model.params.timeLimit = self.time_limit - elapsed_time
-            model.optimize()
-            if model.status == GRB.TIME_LIMIT:
-                raise TimeoutError()
+            _optimize(model, initial_time, self.time_limit)
             x = model.getVars()
             xv = model.getAttr("x", x)
-            n = len(xv)
 
             # Find fractional vars
-            candidates = [
-                (frac(xv[i]), i)
-                for i in range(n)
-                if vtype[i] != "C" and frac(xv[i]) > 1e-3
-            ]
-            if len(candidates) == 0:
+            frac_vars = _find_frac_vars(xv, vtype)
+            if len(frac_vars) == 0:
                 _restore_bounds(model, original_bounds)
                 return UNCOMPRESSABLE
 
             # Build candidate directions
             directions = []
-            for (_, i) in candidates:
+            for (_, i) in frac_vars:
                 directions.append(Direction(pi=x[i], pi_0=floor(xv[i])))
+
+            # Evaluate directions
+            elapsed_time = time() - initial_time
+            best_dir, best_val, best_vals = _evaluate(
+                model, directions, stats, self.time_limit - elapsed_time
+            )
+
+            # Restore bounds
+            _restore_bounds(model, original_bounds)
+
+            if sense * best_val >= sense * globalbnd:
+                assert best_dir is not None
+                assert best_vals is not None
+                _replace(tree, node_id, best_dir.pi, best_dir.pi_0, best_vals)
+                return COMPRESSED
+            else:
+                return UNCOMPRESSABLE
+
+        _down_search(tree, stats, callback)
+        _stats_finalize(stats, tree)
+        return tree, stats
+
+
+# -----------------------------------------------------------------------------
+
+
+class PairsCompression:
+    """
+    Compression method that evaluates directions based on pairs of fractional
+    decision variables (such as x1 + x2, or x1 - x2).
+    """
+
+    def __init__(self, time_limit: float = 30):
+        self.time_limit = time_limit
+
+    def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
+        initial_time = time()
+        tree = _read_json(tree_filename)
+        stats = _stats_init(model_filename, tree_filename, tree)
+
+        # Run DropCompression first
+        drop_stats = _stats_init(model_filename, tree_filename, tree)
+        DropCompression()._compress_inplace(tree, drop_stats)
+
+        model = _read_model(model_filename)
+        vtype = model.getAttr("vtype", model.getVars())
+        sense = model.modelSense
+        model = model.relax()
+        globalbnd = tree["nodes"]["0"]["subtree_bound"]
+
+        def callback(node_id: str) -> int:
+            # Check available time
+            elapsed_time = time() - initial_time
+            if elapsed_time > self.time_limit:
+                raise TimeoutError()
+
+            # Check if node can be dropped
+            if sense * tree["nodes"][node_id]["obj"] >= sense * globalbnd:
+                _drop(tree, node_id)
+                return COMPRESSED
+
+            # Solve LP relaxation of the node
+            original_bounds = _set_bounds(model, tree, node_id)
+            _optimize(model, initial_time, self.time_limit)
+            x = model.getVars()
+            xv = model.getAttr("x", x)
+
+            # Find fractional vars
+            frac_vars = _find_frac_vars(xv, vtype)
+            logger.debug(f"Found {len(frac_vars)} frac vars")
+
+            # # Filter fractional variables
+            # frac_vars = [
+            #     (score, var)
+            #     for (score, var) in frac_vars
+            #     if x[var].varName in tree["nodes"]["0"]["subtree_support"]
+            # ]
+            # logger.debug(f"Filtered down to {len(frac_vars)} frac vars")
+
+            if len(frac_vars) == 0:
+                _restore_bounds(model, original_bounds)
+                return UNCOMPRESSABLE
+
+            # Build candidate directions
+            directions = []
+            for (_, i1) in frac_vars:
+                directions.append(Direction(pi=x[i1], pi_0=floor(xv[i1])))
+                for (_, i2) in frac_vars:
+                    if i2 <= i1:
+                        continue
+                    for pi in [x[i1] + x[i2], x[i1] - x[i2]]:
+                        pi_0 = floor(pi.getValue())
+                        directions.append(Direction(pi=pi, pi_0=pi_0))
 
             # Evaluate directions
             elapsed_time = time() - initial_time
@@ -156,11 +255,12 @@ class OweMeh2001Compression:
         initial_time = time()
         tree = _read_json(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
-        stats["method"] = "OweMeh2001"
 
-        model = gp.read(model_filename)
-        model.params.OutputFlag = 0
-        model.params.Threads = 1
+        # Run DropCompression first
+        drop_stats = _stats_init(model_filename, tree_filename, tree)
+        DropCompression()._compress_inplace(tree, drop_stats)
+
+        model = _read_model(model_filename)
         vtype = model.getAttr("vtype", model.getVars())
         sense = model.modelSense
         model = model.relax()
@@ -179,25 +279,14 @@ class OweMeh2001Compression:
 
             # Solve LP relaxation of the node
             original_bounds = _set_bounds(model, tree, node_id)
-            elapsed_time = time() - initial_time
-            model.params.TimeLimit = self.time_limit - elapsed_time
-            model.optimize()
-            if model.status == GRB.TIME_LIMIT:
-                raise TimeoutError()
+            _optimize(model, initial_time, self.time_limit)
             x = model.getVars()
             xv = model.getAttr("x", x)
-            n = len(xv)
-
-            # Find best single-variable branching direction
-            candidates = [
-                (frac(xv[i]), i)
-                for i in range(n)
-                if vtype[i] != "C" and frac(xv[i]) > 0.01
-            ]
 
             # Create directions
+            frac_vars = _find_frac_vars(xv, vtype)
             directions = []
-            for (_, i) in candidates:
+            for (_, i) in frac_vars:
                 directions.append(Direction(pi=x[i], pi_0=floor(xv[i])))
 
             best_val, best_dir, best_vals = float("-inf"), None, None
@@ -223,22 +312,13 @@ class OweMeh2001Compression:
                 else:
                     c = model.addConstr(curr_dir.pi >= curr_dir.pi_0 + 1)
 
-                elapsed_time = time() - initial_time
-                model.params.TimeLimit = self.time_limit - elapsed_time
-                model.optimize()
-                if model.status == GRB.TIME_LIMIT:
-                    raise TimeoutError()
+                _optimize(model, initial_time, self.time_limit)
                 xv = model.getAttr("x", x)
 
                 # Construct new set of candidate directions
-                candidates = [
-                    (frac(xv[i]), i)
-                    for i in range(n)
-                    if vtype[i] != "C" and frac(xv[i]) > 0.01
-                ]
-
+                frac_vars = _find_frac_vars(xv, vtype)
                 directions = []
-                for (_, i) in candidates:
+                for (_, i) in frac_vars:
                     for pi in [curr_dir.pi + x[i], curr_dir.pi - x[i]]:
                         pi_0 = floor(pi.getValue())
                         directions.append(Direction(pi=pi, pi_0=pi_0))
@@ -264,55 +344,145 @@ class OweMeh2001Compression:
 # -----------------------------------------------------------------------------
 
 
-def run(time_limit: float = 3600) -> None:
-    def _sample(args: Tuple) -> dict:
-        model_filename, method = args
-        tree_filename = model_filename.replace("models/", "trees/RB/").replace(
-            ".mps.gz", ".tree.json"
-        )
-        try:
-            initial_time = time()
-            _, stats = method.compress(model_filename, tree_filename)
-            stats["time"] = time() - initial_time
-            return stats
-        except:
-            return {}
+class MahChi2013Compression:
+    """
+    Compression method that: (1) finds tight constraints in the node LP to be
+    used as "foundational constraints"; (2) builds a direction that is
+    approximately parallel to these foundational constraints by taking the sign
+    of each coefficient; (3) builds a perpendicular direction to the parallel
+    ones. Based on the method proposed by:
 
-    combinations = [
-        (model_filename, method)
-        for model_filename in glob("instances/models/miplib3/*.mps.gz")
-        for method in [
-            DropCompression(),
-            StrongBranchCompression(time_limit=time_limit),
-            OweMeh2001Compression(time_limit=time_limit),
-        ]
-    ]
-    shuffle(combinations)
-    stats = p_umap(_sample, combinations, smoothing=0)
-    # stats = [_sample(args) for args in combinations]
-    pd.DataFrame(stats).to_csv("results.csv")
+        Mahmoud, H., & Chinneck, J. W. (2013). Achieving MILP feasibility
+        quickly using general disjunctions. Computers & operations research,
+        40(8), 2094-2102.
+    
+    """
+
+    def __init__(self, time_limit: float = 30, max_directions: int = 100):
+        self.time_limit = time_limit
+        self.max_directions = max_directions
+
+    def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
+        initial_time = time()
+        tree = _read_json(tree_filename)
+        stats = _stats_init(model_filename, tree_filename, tree)
+
+        # Run DropCompression first
+        drop_stats = _stats_init(model_filename, tree_filename, tree)
+        DropCompression()._compress_inplace(tree, drop_stats)
+
+        model = _read_model(model_filename)
+        vtype = model.getAttr("vtype", model.getVars())
+        sense = model.modelSense
+        model = model.relax()
+        globalbnd = tree["nodes"]["0"]["subtree_bound"]
+
+        def callback(node_id: str) -> int:
+            # Check available time
+            elapsed_time = time() - initial_time
+            if elapsed_time > self.time_limit:
+                raise TimeoutError()
+
+            # Check if node can be dropped
+            if sense * tree["nodes"][node_id]["obj"] >= sense * globalbnd:
+                _drop(tree, node_id)
+                return COMPRESSED
+
+            # Solve LP relaxation of the node
+            original_bounds = _set_bounds(model, tree, node_id)
+            _optimize(model, initial_time, self.time_limit)
+
+            # Find foundational constraints
+            constrs = _find_foundational_constrs(model, vtype)
+            if constrs is None:
+                return UNCOMPRESSABLE
+
+            # Build parallel directions
+            paral_dirs = []
+            for constr in constrs:
+                pi = gp.LinExpr()
+                expr = model.getRow(constr)
+                for i in range(expr.size()):
+                    var = expr.getVar(i)
+                    if vtype[var.index] == "C":
+                        continue
+                    if expr.getCoeff(i) > 1e-3:
+                        pi += var
+                    elif expr.getCoeff(i) < -1e-3:
+                        pi -= var
+                paral_dirs.append(pi)
+
+            # Build perpendicular directions
+            directions: List[Direction] = []
+            for expr in paral_dirs:
+                flip = 1
+                pi = gp.LinExpr()
+                for i in range(expr.size()):
+                    # If we have an odd number of terms, one of them has to be
+                    # set to zero. Here, we just set the first one. In the paper,
+                    # they have a more complex rule.
+                    if i == 0 and (expr.size() % 2) == 1:
+                        continue
+                    if expr.getCoeff(i) > 0:
+                        pi -= expr.getVar(i) * flip
+                    else:
+                        pi += expr.getVar(i) * flip
+                    flip *= -1
+
+                pi_0 = pi.getValue()
+                if frac(pi_0) > 1e-5:
+                    directions.append(Direction(pi=pi, pi_0=floor(pi_0)))
+
+                if len(directions) >= self.max_directions:
+                    break
+
+            # Evaluate directions
+            elapsed_time = time() - initial_time
+            best_dir, best_val, best_vals = _evaluate(
+                model, directions, stats, self.time_limit - elapsed_time
+            )
+
+            # Restore bounds
+            _restore_bounds(model, original_bounds)
+
+            if sense * best_val >= sense * globalbnd:
+                assert best_dir is not None
+                assert best_vals is not None
+                _replace(tree, node_id, best_dir.pi, best_dir.pi_0, best_vals)
+                return COMPRESSED
+            else:
+                return UNCOMPRESSABLE
+
+        _down_search(tree, stats, callback)
+        _stats_finalize(stats, tree)
+        return tree, stats
 
 
 # -----------------------------------------------------------------------------
 
 
 def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
-    pending = ["0"]
-    while len(pending) > 0:
-        node_id = pending.pop()
+    pending: Queue = Queue()
+    pending.put("0")
+    while not pending.empty():
+        node_id = pending.get()
+        logger.debug(f"Visiting node {node_id}")
         stats["nodes_visited"] += 1
         try:
             result = callback(node_id)
         except TimeoutError:
+            logger.debug("Time limit reached. Aborting.")
             return
         if result == COMPRESSED:
+            logger.debug(f"Node {node_id} compressed")
             pass
         elif result == UNCOMPRESSABLE:
+            logger.debug(f"Node {node_id} is uncompressable.")
             for child_id in tree["nodes"][node_id]["children"]:
                 # Skip leaf nodes
                 if len(tree["nodes"][child_id]["children"]) == 0:
                     continue
-                pending.append(child_id)
+                pending.put(child_id)
         else:
             raise Exception(f"Unknown callback result: {result}")
 
@@ -368,6 +538,8 @@ def _replace(
     }
 
     tree["nodes"][root_id]["children"] = [left_id, right_id]
+    logger.debug(tree["nodes"][left_id])
+    logger.debug(tree["nodes"][right_id])
 
 
 def _next_id(tree: dict) -> str:
@@ -435,6 +607,7 @@ def frac(x: float) -> float:
 def _evaluate(
     model: gp.Model, directions: List[Direction], stats: dict, time_limit: float,
 ) -> Tuple[Direction, float, Tuple[float, float]]:
+    logger.debug(f"Evaluating {len(directions)} directions...")
     initial_time = time()
     sense = model.modelSense
     model.params.TimeLimit = time_limit
@@ -481,5 +654,159 @@ def _evaluate(
 
 
 def _read_json(filename: str) -> dict:
+    logger.debug(f"Reading: {filename}")
     with open(filename) as f:
         return json.load(f)
+
+
+def _read_model(filename: str) -> gp.Model:
+    logger.debug(f"Reading: {filename}")
+    model = gp.read(filename)
+    model.params.OutputFlag = 0
+    model.params.Threads = 1
+    return model
+
+
+def _optimize(model: gp.Model, initial_time: float, time_limit: float) -> None:
+    elapsed_time = time() - initial_time
+    model.params.TimeLimit = max(0, time_limit - elapsed_time)
+    model.optimize()
+    if model.status == GRB.TIME_LIMIT:
+        raise TimeoutError()
+
+
+def _find_frac_vars(
+    xv: List[float], vtype: List[str], atol: float = 1e-5,
+) -> List[Tuple[float, int]]:
+    return [
+        (frac(xv[i]), i)
+        for i in range(len(xv))
+        if vtype[i] != "C" and frac(xv[i]) > atol
+    ]
+
+
+def _find_foundational_constrs(
+    model: gp.Model, vtype: List[str], atol: float = 1e-5
+) -> Optional[gp.Constr]:
+    """
+    Select a foundational constraint, which will serve as basis for the general
+    direction, based on the method proposed by  Mahmoud, H., & Chinneck, J. W.
+    (2013).
+    """
+
+    xv = model.getAttr("x", model.getVars())
+    candidate_vars = set(
+        var
+        for (i, var) in enumerate(model.getVars())
+        if vtype[i] != "C" and frac(var.x) > atol
+    )
+
+    def count_candidate_vars(constr: List[gp.Constr]) -> int:
+        """Count number of fractional variables in the constraints"""
+        count = 0
+        expr = model.getRow(constr)
+        for i in range(expr.size()):
+            if expr.getVar(i) in candidate_vars:
+                count += 1
+        return count
+
+    def count_int_vars(constr: List[gp.Constr]) -> int:
+        """Count number of integer variables in the constraint."""
+        count = 0
+        expr = model.getRow(constr)
+        for i in range(expr.size()):
+            if vtype[expr.getVar(i).index] != "C":
+                count += 1
+        return count
+
+    candidate_constrs = []
+    for constr in model.getConstrs():
+        if constr.sense == "=" or abs(constr.slack) < atol:
+            candidate_constrs.append(constr)
+
+    if len(candidate_constrs) == 0:
+        return None
+
+    candidates = sorted(
+        [
+            (count_candidate_vars(constr), count_int_vars(constr), i, constr,)
+            for (i, constr) in enumerate(candidate_constrs)
+        ],
+        reverse=True,
+    )
+
+    return [c[3] for c in candidates]
+
+def _write_json(obj, filename):
+    with open(filename, "w") as f:
+        json.dump(obj, f, indent=2)
+
+
+# -----------------------------------------------------------------------------
+
+
+def run(time_limit: float = 3600) -> None:
+    def _sample(args: Tuple) -> dict:
+        model_filename, method_name, method = args
+
+        # Compute filenames
+        instance = re.search("instances/models/(.*)\.mps\.gz", model_filename).group(1)
+        in_tree_filename = f"instances/trees/RB/{instance}.tree.json"
+        stats_filename = f"results/{method_name}/{instance}.stats.json"
+        out_tree_filename = f"results/{method_name}/{instance}.tree.json"
+        log_filename = f"results/{method_name}/{instance}.log"
+
+        # Skip instances that do not have the corresponding tree file
+        if not exists(in_tree_filename):
+            return
+
+        # Skip instances that have already been processed
+        if exists(stats_filename):
+            return
+
+        # Create folder
+        mkpath(dirname(stats_filename))
+
+        # Set up logger
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
+        logger.addHandler(file_handler)
+
+        try:
+            # Run method
+            initial_time = time()
+            tree, stats = method.compress(model_filename, in_tree_filename)
+
+            # Record additional information
+            stats["time"] = time() - initial_time
+            stats["method"] = method_name
+            stats["time_limit"] = time_limit
+
+            # Write all output
+            _write_json(stats, stats_filename)
+            _write_json(tree, out_tree_filename)
+        except:
+            logger.exception(f"Failed sample: {model_filename} {in_tree_filename}")
+
+        # Tear down logging
+        logger.removeHandler(file_handler)
+
+    # Run benchmarks
+    combinations = [
+        (model_filename, method_name, method)
+        for model_filename in glob("instances/models/miplib3/*.mps.gz")
+        for (method_name, method) in {
+            "Drop": DropCompression(),
+            "StrongBranch": StrongBranchCompression(time_limit=time_limit),
+            "OweMeh2001": OweMeh2001Compression(time_limit=time_limit),
+            "Pairs": PairsCompression(time_limit=time_limit),
+            "MahChi2013": MahChi2013Compression(time_limit=time_limit),
+        }.items()
+    ]
+    shuffle(combinations)
+    p_umap(_sample, combinations, smoothing=0)
+
+
+if __name__ == "__main__":
+    run()
