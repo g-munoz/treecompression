@@ -201,16 +201,16 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	
 	if disj.status == 5:
 		#print("\nUnbounded problem, probably the proposed bound was too weak\n")
-		return 1, None, None
+		return 1, None, None, disj.runtime
 		
 	if disj.objVal <= 1E-6:
 		#print("\nNo disjuction found\n")
-		return 0, None, None
+		return 0, None, None, disj.runtime
 	
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [pi[i].X for i in range(len(pi))]
 	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
-	return 1, np.round(solX), np.round(pi0.X)
+	return 1, np.round(solX), np.round(pi0.X), disj.runtime
 
 
 def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
@@ -240,7 +240,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 	
 	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0 = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
+	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
@@ -289,6 +289,6 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 				print(var, pi[varindex])
 		print("rhs", pi0)
 		
-	return success
+	return success, runtime
 
 #findDisjunction(sys.argv)

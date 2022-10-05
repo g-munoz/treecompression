@@ -52,7 +52,8 @@ def downtreesearch(node, tree):
 		return nodecount, nodesvisited
 
 	if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
-		success = main(node,tree)
+		success, runtime = main(node,tree)
+		print("NODEINFO:", node, runtime, success)
 	else:
 		success = False
 		nodesvisited = 0
@@ -94,7 +95,7 @@ def uptreesearch(tree):
 			if canDrop: 
 				success = 2
 			else:
-				success = main(node,tree)
+				success, runtime = main(node,tree)
 			
 		nodesvisited += 1
 		
