@@ -1,21 +1,22 @@
-import gurobipy as gp
-from gurobipy import GRB
 import json
-from copy import deepcopy
-from math import floor, ceil
-from dataclasses import dataclass
-from typing import Union, Callable, Tuple, List, Dict, Optional
-from p_tqdm import p_umap
-from glob import glob
-import pandas as pd
-from time import time
-from os.path import exists, dirname
-from random import shuffle
 import logging
-from distutils.dir_util import mkpath
-from queue import Queue
 import re
 import sys
+from dataclasses import dataclass
+from distutils.dir_util import mkpath
+from glob import glob
+from math import floor
+from os.path import exists, dirname
+from queue import Queue
+from random import shuffle
+from time import time
+from typing import Union, Callable, Tuple, List, Dict, Optional
+
+import gurobipy as gp
+import h5py
+import numpy as np
+from gurobipy import GRB
+from p_tqdm import p_umap
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -51,7 +52,8 @@ class DropCompression:
         self._compress_inplace(tree, stats)
         return tree, stats
 
-    def _compress_inplace(self, tree: dict, stats: dict) -> None:
+    @staticmethod
+    def _compress_inplace(tree: dict, stats: dict) -> None:
         globalbnd = tree["nodes"]["0"]["subtree_bound"]
         sense = 1 if tree["sense"] == "min" else -1
 
@@ -248,8 +250,17 @@ class OweMeh2001Compression:
 
     """
 
-    def __init__(self, time_limit: float = 30):
+    def __init__(
+        self,
+        tree_search,
+        time_limit: float = 30,
+        max_vars: int = 1_000_000,
+        max_iterations=1_000,
+    ):
         self.time_limit = time_limit
+        self.max_vars = max_vars
+        self.max_iterations = max_iterations
+        self.tree_search = tree_search
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         initial_time = time()
@@ -259,6 +270,34 @@ class OweMeh2001Compression:
         # Run DropCompression first
         drop_stats = _stats_init(model_filename, tree_filename, tree)
         DropCompression()._compress_inplace(tree, drop_stats)
+
+        # Load pseudocosts
+        def _fix_nan(a):
+            a[np.isnan(a)] = np.nanmean(a)
+
+        h5_filename = model_filename.replace(".mps.gz", ".h5")
+        h5 = h5py.File(h5_filename, "r")
+        var_pseudocost_up = np.array(h5["bb_var_pseudocost_up"])
+        var_pseudocost_down = np.array(h5["bb_var_pseudocost_down"])
+        h5.close()
+        _fix_nan(var_pseudocost_up)
+        _fix_nan(var_pseudocost_down)
+
+        def _filter_vars(frac_vars):
+            score = [
+                (
+                    var_pseudocost_up[var_idx]
+                    * var_frac
+                    * var_pseudocost_down[var_idx]
+                    * (1 - var_frac),
+                    var_frac,
+                    var_idx,
+                )
+                for (var_frac, var_idx) in frac_vars
+            ]
+            score.sort(reverse=True)
+            score = score[: min(len(score), self.max_vars)]
+            return [(frac, idx) for (_, frac, idx) in score]
 
         model = _read_model(model_filename)
         vtype = model.getAttr("vtype", model.getVars())
@@ -285,25 +324,33 @@ class OweMeh2001Compression:
 
             # Create directions
             frac_vars = _find_frac_vars(xv, vtype)
+            frac_vars = _filter_vars(frac_vars)
             directions = []
             for (_, i) in frac_vars:
                 directions.append(Direction(pi=x[i], pi_0=floor(xv[i])))
 
             best_val, best_dir, best_vals = float("-inf"), None, None
 
-            for iteration in range(10):
+            for iteration in range(self.max_iterations):
                 if len(directions) == 0:
                     break
 
                 elapsed_time = time() - initial_time
                 curr_dir, curr_val, (curr_left_val, curr_right_val) = _evaluate(
-                    model, directions, stats, self.time_limit - elapsed_time
+                    model,
+                    directions,
+                    stats,
+                    time_limit=self.time_limit - elapsed_time,
+                    target=globalbnd,
                 )
                 if sense * curr_val > sense * best_val:
                     best_val = curr_val
                     best_dir = curr_dir
                     best_vals = (curr_left_val, curr_right_val)
                 else:
+                    break
+
+                if sense * best_val >= sense * globalbnd:
                     break
 
                 # Re-solve LP relaxation of the worst side of the best direction
@@ -317,6 +364,7 @@ class OweMeh2001Compression:
 
                 # Construct new set of candidate directions
                 frac_vars = _find_frac_vars(xv, vtype)
+                frac_vars = _filter_vars(frac_vars)
                 directions = []
                 for (_, i) in frac_vars:
                     for pi in [curr_dir.pi + x[i], curr_dir.pi - x[i]]:
@@ -336,7 +384,7 @@ class OweMeh2001Compression:
             else:
                 return UNCOMPRESSABLE
 
-        _down_search(tree, stats, callback)
+        self.tree_search(tree, stats, callback)
         _stats_finalize(stats, tree)
         return tree, stats
 
@@ -462,10 +510,12 @@ class MahChi2013Compression:
 
 
 def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
+    initial_time = time()
     pending: Queue = Queue()
     pending.put("0")
     while not pending.empty():
         node_id = pending.get()
+        initial_node_time = time()
         logger.debug(f"Visiting node {node_id}")
         stats["nodes_visited"] += 1
         try:
@@ -473,6 +523,9 @@ def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
         except TimeoutError:
             logger.debug("Time limit reached. Aborting.")
             return
+        logger.debug(
+            f"Visit to node {node_id} took {time() - initial_node_time:.2f} seconds"
+        )
         if result == COMPRESSED:
             logger.debug(f"Node {node_id} compressed")
             pass
@@ -485,6 +538,41 @@ def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
                 pending.put(child_id)
         else:
             raise Exception(f"Unknown callback result: {result}")
+    logger.debug(f"Search finished in {time() - initial_time:,.2f} seconds")
+    logger.debug(f"Compressed tree has {len(tree['nodes']):,d} nodes")
+
+
+def _priority_search(tree: dict, stats: dict, callback: Callable) -> None:
+    initial_time = time()
+    queue = [
+        ((len(node["subtree_support"]), -node["depth"]), node["id"])
+        for node in tree["nodes"].values()
+    ]
+    queue.sort(reverse=True)
+    for (score, node_id) in queue:
+        initial_node_time = time()
+        logger.debug(f"Visiting node {node_id} (score {score})")
+        if node_id not in tree["nodes"]:
+            logger.debug(f"Node {node_id} has been previously removed.")
+            continue
+        stats["nodes_visited"] += 1
+        try:
+            result = callback(node_id)
+        except TimeoutError:
+            logger.debug("Time limit reached. Aborting.")
+            return
+        logger.debug(
+            f"Visit to node {node_id} took {time() - initial_node_time:.2f} seconds"
+        )
+        if result == COMPRESSED:
+            logger.debug(f"Node {node_id} compressed")
+            pass
+        elif result == UNCOMPRESSABLE:
+            logger.debug(f"Node {node_id} is uncompressable.")
+        else:
+            raise Exception(f"Unknown callback result: {result}")
+    logger.debug(f"Search finished in {time() - initial_time:,.2f} seconds")
+    logger.debug(f"Compressed tree has {len(tree['nodes']):,d} nodes")
 
 
 def _drop(tree: dict, root_id: str) -> None:
@@ -605,7 +693,11 @@ def frac(x: float) -> float:
 
 
 def _evaluate(
-    model: gp.Model, directions: List[Direction], stats: dict, time_limit: float,
+    model: gp.Model,
+    directions: List[Direction],
+    stats: dict,
+    time_limit: float,
+    target: float,
 ) -> Tuple[Direction, float, Tuple[float, float]]:
     logger.debug(f"Evaluating {len(directions)} directions...")
     initial_time = time()
@@ -641,12 +733,19 @@ def _evaluate(
         return val
 
     best_val, best_dir, best_vals = float("-inf"), None, None
-    for d in directions:
+    for (i, d) in enumerate(directions):
         left_val = _value(d.pi <= d.pi_0)
         right_val = _value(d.pi >= d.pi_0 + 1)
         dir_val = sense * min(sense * left_val, sense * right_val)
-        if dir_val > best_val:
+        if sense * dir_val > sense * best_val:
             best_val, best_dir, best_vals = dir_val, d, (left_val, right_val)
+
+            # Early stop
+            if sense * dir_val >= sense * target:
+                logger.debug(
+                    f"Direction found. Stopping early, after only {i} evaluations."
+                )
+                break
 
     assert best_dir is not None
     assert best_vals is not None
@@ -737,6 +836,7 @@ def _find_foundational_constrs(
 
     return [c[3] for c in candidates]
 
+
 def _write_json(obj, filename):
     with open(filename, "w") as f:
         json.dump(obj, f, indent=2)
@@ -745,7 +845,7 @@ def _write_json(obj, filename):
 # -----------------------------------------------------------------------------
 
 
-def run(time_limit: float = 3600) -> None:
+def run(time_limit: float = 900) -> None:
     def _sample(args: Tuple) -> dict:
         model_filename, method_name, method = args
 
@@ -768,7 +868,7 @@ def run(time_limit: float = 3600) -> None:
         mkpath(dirname(stats_filename))
 
         # Set up logger
-        file_handler = logging.FileHandler(log_filename)
+        file_handler = logging.FileHandler(log_filename, mode="w")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
         logger.addHandler(file_handler)
@@ -795,13 +895,30 @@ def run(time_limit: float = 3600) -> None:
     # Run benchmarks
     combinations = [
         (model_filename, method_name, method)
-        for model_filename in glob("instances/models/miplib3/*.mps.gz")
+        for model_filename in glob("instances/models/miplib2017/*.mps.gz")
         for (method_name, method) in {
-            "Drop": DropCompression(),
-            "StrongBranch": StrongBranchCompression(time_limit=time_limit),
-            "OweMeh2001": OweMeh2001Compression(time_limit=time_limit),
-            "Pairs": PairsCompression(time_limit=time_limit),
-            "MahChi2013": MahChi2013Compression(time_limit=time_limit),
+            "drop": DropCompression(),
+            # "StrongBranch": StrongBranchCompression(time_limit=time_limit),
+            "revised": OweMeh2001Compression(
+                time_limit=time_limit,
+                max_vars=5,
+                max_iterations=3,
+                tree_search=_priority_search,
+            ),
+            # "best": OweMeh2001Compression(
+            #     time_limit=time_limit,
+            #     max_vars=1_000_000,
+            #     max_iterations=1_000_000,
+            #     tree_search=_priority_search,
+            # ),
+            "original": OweMeh2001Compression(
+                time_limit=time_limit,
+                max_vars=1_000_000,
+                max_iterations=1_000_000,
+                tree_search=_down_search,
+            ),
+            # "Pairs": PairsCompression(time_limit=time_limit),
+            # "MahChi2013": MahChi2013Compression(time_limit=time_limit),
         }.items()
     ]
     shuffle(combinations)
