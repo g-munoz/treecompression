@@ -69,7 +69,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	M = disjcoefbound
 	
 	disj = Model()
-	disj.setParam("OutputFlag",0)
+	disj.setParam("OutputFlag",1)
 	disj.setParam("TimeLimit",nodetimelimit)
 	disj.setParam("DualReductions",0)
 	disj.setParam("Threads",1)
