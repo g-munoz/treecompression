@@ -24,12 +24,12 @@ dropnodecount = 0
 compressnodecount = 0
 
 def canbeDropped(node,tree):
-	subtreebnd = float(tree["nodes"][node]["subtree_bound"])
+	nodebnd = float(tree["nodes"][node]["obj"])
 	globalbnd = float(tree["nodes"]["0"]["subtree_bound"])
 
-	if tree["sense"] == "min" and subtreebnd > globalbnd :
+	if tree["sense"] == "min" and nodebnd >= globalbnd :
 		return True
-	if tree["sense"] == "max" and subtreebnd < globalbnd :
+	if tree["sense"] == "max" and nodebnd <= globalbnd :
 		return True
 
 	return False
@@ -51,8 +51,9 @@ def downtreesearch(node, tree):
 		dropnodecount += 1
 		return nodecount, nodesvisited
 
-	if time.time() - starttime < globaltimelimit: #if we still have some time left	
-		success = main(node,tree)
+	if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
+		success, runtime = main(node,tree)
+		print("NODEINFO:", node, runtime, success)
 	else:
 		success = False
 		nodesvisited = 0
@@ -81,7 +82,7 @@ def uptreesearch(tree):
 			#print("INFO: Enqueued",i)
 			Q.put(i)
 			
-	while not Q.empty() and time.time() - starttime < globaltimelimit:
+	while not Q.empty() and time.time() - starttime < globaltimelimit - nodetimelimit:
 		node = Q.get() #this queue should only have nodes whose children all succeeded. We might want to change this
 		
 		print("INFO: Processing",node)
@@ -94,7 +95,7 @@ def uptreesearch(tree):
 			if canDrop: 
 				success = 2
 			else:
-				success = main(node,tree)
+				success, runtime = main(node,tree)
 			
 		nodesvisited += 1
 		

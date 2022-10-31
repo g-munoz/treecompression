@@ -69,7 +69,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	M = disjcoefbound
 	
 	disj = Model()
-	disj.setParam("OutputFlag",0)
+	disj.setParam("OutputFlag",1)
 	disj.setParam("TimeLimit",nodetimelimit)
 	disj.setParam("DualReductions",0)
 	disj.setParam("Threads",1)
@@ -85,7 +85,10 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	sR = disj.addVar(lb=0.0, name="sR")
 	
 	for i in range(n):
-		pi[i] = disj.addVar(vtype=GRB.INTEGER, lb=-M, ub=M, name="pi%d"%i)
+		lhscoefbound = M
+		if disjsuppsize == 1: #when support size is one, lhs coefficient should be <= 1
+			lhscoefbound = 1
+		pi[i] = disj.addVar(vtype=GRB.INTEGER, lb=-lhscoefbound, ub=lhscoefbound, name="pi%d"%i)
 		
 	pi0 = disj.addVar(vtype=GRB.INTEGER, lb=-M, ub=M, name="pirhs")
 	
@@ -201,16 +204,16 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	
 	if disj.status == 5:
 		#print("\nUnbounded problem, probably the proposed bound was too weak\n")
-		return 1, None, None
+		return 1, None, None, disj.runtime
 		
 	if disj.objVal <= 1E-6:
 		#print("\nNo disjuction found\n")
-		return 0, None, None
+		return 0, None, None, disj.runtime
 	
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [pi[i].X for i in range(len(pi))]
 	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
-	return 1, np.round(solX), np.round(pi0.X)
+	return 1, np.round(solX), np.round(pi0.X), disj.runtime
 
 
 def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
@@ -240,15 +243,15 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 	
 	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0 = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
+	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
 	else:
 		print("Node with dual bound", K, "could not be compressed")
 		
-	sanitycheck = False
-	if sanitycheck:
+	sanitycheck = True
+	if success and sanitycheck:
 		relaxed = model_orig.relax()
 		disj1 = relaxed.copy()
 		disj2 = relaxed.copy()
@@ -256,6 +259,8 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 		relaxed.setParam("OutputFlag",0)
 		disj1.setParam("OutputFlag",0)
 		disj2.setParam("OutputFlag",0)
+		disj1.setParam("DualReductions",0)
+		disj2.setParam("DualReductions",0)
 		
 		varlist1 = disj1.getVars()
 		varlist2 = disj2.getVars()
@@ -268,27 +273,40 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 		disj2.optimize()
 		
 		if disj1.status == 3 :
-			obj1 = "Inf"
+			if disj1.ModelSense == GRB.MAXIMIZE:
+				obj1 = -GRB.INFINITY
+			else:
+				obj1 = GRB.INFINITY
 		else:
 			obj1 = disj1.objVal
 		
 		if disj2.status == 3 :
-			obj2 = "Inf"
+			if disj2.ModelSense == GRB.MAXIMIZE:
+				obj2 = -GRB.INFINITY
+			else:
+				obj2 = GRB.INFINITY
 		else:
 			obj2 = disj2.objVal
 		
-		print("\n==========\n")
-		#print("Statuses", relaxed.status, disj1.status, disj2.status)
-		print("Rel/disj1/disj2", relaxed.objVal, obj1, obj2)
-		print("\n==========\n")
+		# print("\n==========\n")
+		# #print("Statuses", relaxed.status, disj1.status, disj2.status)
+		# print("Rel/disj1/disj2", relaxed.objVal, obj1, obj2)
+		# print("\n==========\n")
 		
-		for i in range(model_orig.numVars):
-			var = model_orig.getVars()[i]
-			varindex = var.index
-			if abs(pi[varindex])> 1E-5:
-				print(var, pi[varindex])
-		print("rhs", pi0)
-		
-	return success
+		# for i in range(model_orig.numVars):
+		# 	var = model_orig.getVars()[i]
+		# 	varindex = var.index
+		# 	if abs(pi[varindex])> 1E-5:
+		# 		print(var, pi[varindex])
+		# print("rhs", pi0)
+
+		if relaxed.ModelSense == GRB.MAXIMIZE and max(obj1,obj2) > K + 1E-4 :
+			print("Warning (Max): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
+			success  = 0
+		elif relaxed.ModelSense == GRB.MINIMIZE and min(obj1,obj2) < K - 1E-4:
+			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
+			success  = 0
+
+	return success, runtime
 
 #findDisjunction(sys.argv)
