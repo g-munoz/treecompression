@@ -34,11 +34,11 @@ def canbeDropped(node,tree):
 
 	return False
 
-def downtreesearch(node, tree):
+def downtreesearchDFS(node, tree):
 
 	global compressnodecount
 	global dropnodecount
-
+	#print("DFS visiting node ", node)
 	nodecount = 1
 	nodesvisited = 1
 	
@@ -64,12 +64,56 @@ def downtreesearch(node, tree):
 		nodecount = nodecount + 2 #we add 2, since the compression is done via a disjunction that would create to children. Note that here we are not on a leaf.
 	else:
 		for i in children:
-			nodecount_down, nodesvisited_down = downtreesearch(i, tree) ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
+			nodecount_down, nodesvisited_down = downtreesearchDFS(i, tree) ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
 			nodecount = nodecount + nodecount_down ##Ugly hack: when time limit is hit, it will still go down the tree, but just for adding nodes. 
 			nodesvisited = nodesvisited + nodesvisited_down
 
 	return nodecount, nodesvisited
 	
+
+def downtreesearchBFS(startnode, tree):
+
+	global compressnodecount
+	global dropnodecount
+
+	nodecount = 0
+	nodesvisited = 0
+	
+	Q = Queue()
+	Q.put(startnode)
+
+	while not Q.empty():
+		node = Q.get()
+		#print("BFS visiting node ", node)
+		nodecount += 1
+		nodesvisited += 1
+
+		children = tree["nodes"][node]["children"]	
+		if len(children) == 0:
+			print("INFO: Reached leaf", node)
+			continue
+
+		if drop and canbeDropped(node,tree):
+			dropnodecount += 1	
+			continue
+
+		if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
+			success, runtime = main(node,tree)
+			print("NODEINFO:", node, runtime, success)
+		else:
+			success = False
+			nodesvisited -= 1
+		
+		if success:
+			print("INFO: Subtree rooted at", node, "compressed")
+			compressnodecount += 1
+			nodecount = nodecount + 2 #we add 2, since the compression is done via a disjunction that would create to children. Note that here we are not on a leaf.
+		else:
+			for i in children:
+				Q.put(i)
+
+	return nodecount, nodesvisited
+
 def uptreesearch(tree):
 	Q = Queue()
 	remaining_children = {}
@@ -213,7 +257,6 @@ parser.add_argument('--nodrop', action='store_true',
 parser.add_argument('--usesubtreebound', action='store_true',
                     help='Use subtree bound instead of global dual bound')
 
-
 parser.add_argument('--disjcoefbound', type=int,
                     help='Disjunction coefficient bound')
 
@@ -221,6 +264,9 @@ parser.add_argument('--disjsuppsize', type=int,
                     help='Disjunction support size')
 
 parser.add_argument('--treename', help='Tree to compress')
+
+parser.add_argument('--bfs', action='store_true',
+                    help='Use BFS to search the tree')
 
 args = parser.parse_args()
 
@@ -258,7 +304,10 @@ starttime = time.time()
 nodesvisited = 0
 
 if not args.upsearch:
-	nodecount, nodesvisited = downtreesearch(str(0),tree)
+	if args.bfs:
+		nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
+	else:
+		nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
 else:
 	nodecount, nodesvisited = uptreesearch(tree)
 
