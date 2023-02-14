@@ -713,7 +713,7 @@ def _evaluate(
 
     def _value(constr: gp.TempConstr) -> float:
         elapsed_time = time() - initial_time
-        if elapsed_time > time_limit:
+        if elapsed_time > time_limit - 0.1:
             raise TimeoutError()
         stats["evaluated_directions"] += 1
         model.setAttr("vbasis", all_vars, vbasis)
@@ -845,16 +845,16 @@ def _write_json(obj, filename):
 # -----------------------------------------------------------------------------
 
 
-def run(time_limit: float = 900) -> None:
+def run(time_limit: float = 86_400) -> None:
     def _sample(args: Tuple) -> dict:
-        model_filename, method_name, method = args
+        model_filename, method_name, tree_name, method = args
 
         # Compute filenames
         instance = re.search("instances/models/(.*)\.mps\.gz", model_filename).group(1)
-        in_tree_filename = f"instances/trees/RB/{instance}.tree.json"
-        stats_filename = f"results/{method_name}/{instance}.stats.json"
-        out_tree_filename = f"results/{method_name}/{instance}.tree.json"
-        log_filename = f"results/{method_name}/{instance}.log"
+        in_tree_filename = f"instances/trees/{tree_name}/{instance}.tree.json"
+        stats_filename = f"results/{tree_name}/{method_name}/{instance}.stats.json"
+        out_tree_filename = f"results/{tree_name}/{method_name}/{instance}.tree.json"
+        log_filename = f"results/{tree_name}/{method_name}/{instance}.log"
 
         # Skip instances that do not have the corresponding tree file
         if not exists(in_tree_filename):
@@ -880,6 +880,7 @@ def run(time_limit: float = 900) -> None:
 
             # Record additional information
             stats["time"] = time() - initial_time
+            stats["tree_name"] = tree_name
             stats["method"] = method_name
             stats["time_limit"] = time_limit
 
@@ -894,35 +895,27 @@ def run(time_limit: float = 900) -> None:
 
     # Run benchmarks
     combinations = [
-        (model_filename, method_name, method)
+        (model_filename, method_name, tree_name, method)
         for model_filename in glob("instances/models/miplib2017/*.mps.gz")
+        for tree_name in ["RB"]
         for (method_name, method) in {
             "drop": DropCompression(),
-            # "StrongBranch": StrongBranchCompression(time_limit=time_limit),
-            "revised": OweMeh2001Compression(
-                time_limit=time_limit,
-                max_vars=5,
-                max_iterations=3,
-                tree_search=_priority_search,
-            ),
-            # "best": OweMeh2001Compression(
+            # "revised": OweMeh2001Compression(
             #     time_limit=time_limit,
-            #     max_vars=1_000_000,
-            #     max_iterations=1_000_000,
+            #     max_vars=5,
+            #     max_iterations=3,
             #     tree_search=_priority_search,
             # ),
-            "original": OweMeh2001Compression(
+            "heuristic": OweMeh2001Compression(
                 time_limit=time_limit,
                 max_vars=1_000_000,
                 max_iterations=1_000_000,
                 tree_search=_down_search,
             ),
-            # "Pairs": PairsCompression(time_limit=time_limit),
-            # "MahChi2013": MahChi2013Compression(time_limit=time_limit),
         }.items()
     ]
     shuffle(combinations)
-    p_umap(_sample, combinations, smoothing=0)
+    p_umap(_sample, combinations, smoothing=0, num_cpus=32)
 
 
 if __name__ == "__main__":

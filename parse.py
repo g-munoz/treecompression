@@ -1,29 +1,28 @@
 from glob import glob
 import pandas as pd
 import sys
+import json
+import logging
 
-treetypes = ["FSB", "RBp"]
-methods = ["drop", "supp:1", "supp:2", "supp:inf"]
+treetypes = ["RB"]
+log_methods = ["drop", "supp:1", "supp:2", "supp:inf"]
+json_methods = ["heuristic", "drop"]
+methods = log_methods + json_methods
 
 instancenames = [
     f.replace("instances/models/", "").replace(".mps.gz", "")
-    for f in sorted(glob("instances/models/miplib3/*.mps.gz"))
+    for f in sorted(glob("instances/models/miplib2017/*.mps.gz"))
 ]
 
-cols = pd.MultiIndex.from_product([treetypes,methods])
-compressdf = pd.DataFrame(index=instancenames, columns=cols)
-timedf = pd.DataFrame(index=instancenames, columns=cols)
-
-cols = pd.MultiIndex.from_product([treetypes,methods,["Root","Avg"]])
-nodetimesdf = pd.DataFrame(index=instancenames, columns=cols)
-nodetimesdict = {}
+data = []
 
 for tree in treetypes:
     for instance in instancenames:
-        for method in methods:
+        # Parse log files (produced by compress.py)
+        for method in log_methods:
+            filename = f"results/{tree}/{method}/{instance}.out"
+            print(filename)
             try:
-                filename = f"results/{tree}/{method}/{instance}.out"
-                print(filename)
                 with open(filename) as origin_file:
                     for line in origin_file:
                         if line:
@@ -33,27 +32,44 @@ for tree in treetypes:
                                 orignodes = int(line[3])
                                 newnodes = int(line[5])
                                 time = float(line[12])
-
-                                compressdf.at[instance, (tree,method)] = (1 - newnodes/orignodes) * 100
-                                timedf.at[instance, (tree,method)] = time
-
-                                nodetimesdf.at[instance,(tree,method,"Avg")] = nodetimesdict[instance,tree,method,"Sum"]/nodetimesdict[instance,tree,method,"Count"]
-                            elif line[0]=="NODEINFO:":
-                                nodeid = int(line[1])
-                                nodetime = float(line[2])
-                                if (instance,tree,method,"Sum") in nodetimesdict.keys():
-                                    nodetimesdict[instance,tree,method,"Sum"] += nodetime
-                                    nodetimesdict[instance,tree,method,"Count"] += 1
-                                else:
-                                    nodetimesdict[instance,tree,method,"Sum"] = nodetime
-                                    nodetimesdict[instance,tree,method,"Count"] = 1
-
-                                if nodeid == 0:
-                                    nodetimesdf.at[instance,(tree,method,"Root")] = nodetime
+                                data.append({
+                                    "instance": instance,
+                                    "tree": tree,
+                                    "method": method,
+                                    "compress": (1 - newnodes/orignodes) * 100,
+                                    "time": time,
+                                    "orignodes": orignodes,
+                                    "newnodes": newnodes,
+                                })
             except:
-                pass
+                logging.exception(f"Failed to process {filename}")
 
-with pd.ExcelWriter('viz/summary_miplib3.xlsx') as writer:  
-    compressdf.to_excel(writer, sheet_name='CompressionRatios')
-    timedf.to_excel(writer, sheet_name='Time')
-    nodetimesdf.to_excel(writer,sheet_name='NodeTimes')
+        # Parse JSON files (produced by heuristics.py)
+        for method in json_methods:
+            filename = f"results/{tree}/{method}/{instance}.stats.json"
+            try:
+                print(filename)
+                with open(filename) as file:
+                    stats = json.load(file)
+                orignodes = stats["nodes_before"]
+                newnodes = stats["nodes_after"]
+                time = stats["time"]
+                data.append({
+                    "instance": instance,
+                    "tree": tree,
+                    "method": method,
+                    "compress": (1 - newnodes/orignodes) * 100,
+                    "time": time,
+                    "orignodes": orignodes,
+                    "newnodes": newnodes,
+                })
+            except:
+                logging.exception(f"Failed to process {filename}")
+
+
+data = pd.DataFrame(data)
+data.to_csv("viz/results.csv", index=False)
+
+# with pd.ExcelWriter('viz/summary_miplib3.xlsx') as writer:  
+#     compressdf.to_excel(writer, sheet_name='CompressionRatios')
+#     timedf.to_excel(writer, sheet_name='Time')
