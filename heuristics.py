@@ -47,7 +47,8 @@ class DropCompression:
     """
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
-        tree = _read_json(tree_filename)
+        tree = _read_tree(tree_filename)
+        _compute_subtree_size(tree)
         stats = _stats_init(model_filename, tree_filename, tree)
         self._compress_inplace(tree, stats)
         return tree, stats
@@ -58,10 +59,13 @@ class DropCompression:
         sense = 1 if tree["sense"] == "min" else -1
 
         def callback(node_id: str) -> int:
-            if sense * tree["nodes"][node_id]["obj"] >= sense * globalbnd:
+            node = tree["nodes"][node_id]
+            if sense * node["obj"] >= sense * globalbnd:
+                node["dropped?"] = True
                 _drop(tree, node_id)
                 return COMPRESSED
             else:
+                node["dropped?"] = False
                 return UNCOMPRESSABLE
 
         _down_search(tree, stats, callback)
@@ -81,7 +85,7 @@ class StrongBranchCompression:
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         initial_time = time()
-        tree = _read_json(tree_filename)
+        tree = _read_tree(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
 
         # Run DropCompression first
@@ -158,7 +162,7 @@ class PairsCompression:
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         initial_time = time()
-        tree = _read_json(tree_filename)
+        tree = _read_tree(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
 
         # Run DropCompression first
@@ -256,40 +260,42 @@ class OweMeh2001Compression:
         time_limit: float = 30,
         max_vars: int = 1_000_000,
         max_iterations=1_000,
+        modify_tree=False,
     ):
         self.time_limit = time_limit
         self.max_vars = max_vars
         self.max_iterations = max_iterations
         self.tree_search = tree_search
+        self.modify_tree = modify_tree
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         initial_time = time()
-        tree = _read_json(tree_filename)
+        tree = _read_tree(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
 
         # Run DropCompression first
         drop_stats = _stats_init(model_filename, tree_filename, tree)
         DropCompression()._compress_inplace(tree, drop_stats)
 
-        # Load pseudocosts
-        def _fix_nan(a):
-            a[np.isnan(a)] = np.nanmean(a)
+        # # Load pseudocosts
+        # def _fix_nan(a):
+        #     a[np.isnan(a)] = np.nanmean(a)
 
-        h5_filename = model_filename.replace(".mps.gz", ".h5")
-        h5 = h5py.File(h5_filename, "r")
-        var_pseudocost_up = np.array(h5["bb_var_pseudocost_up"])
-        var_pseudocost_down = np.array(h5["bb_var_pseudocost_down"])
-        h5.close()
-        _fix_nan(var_pseudocost_up)
-        _fix_nan(var_pseudocost_down)
+        # h5_filename = model_filename.replace(".mps.gz", ".h5")
+        # h5 = h5py.File(h5_filename, "r")
+        # var_pseudocost_up = np.array(h5["bb_var_pseudocost_up"])
+        # var_pseudocost_down = np.array(h5["bb_var_pseudocost_down"])
+        # h5.close()
+        # _fix_nan(var_pseudocost_up)
+        # _fix_nan(var_pseudocost_down)
 
         def _filter_vars(frac_vars):
             score = [
                 (
-                    var_pseudocost_up[var_idx]
-                    * var_frac
-                    * var_pseudocost_down[var_idx]
-                    * (1 - var_frac),
+                    # var_pseudocost_up[var_idx]
+                    # * var_frac
+                    # * var_pseudocost_down[var_idx]
+                    # * (1 - var_frac),
                     var_frac,
                     var_idx,
                 )
@@ -297,7 +303,7 @@ class OweMeh2001Compression:
             ]
             score.sort(reverse=True)
             score = score[: min(len(score), self.max_vars)]
-            return [(frac, idx) for (_, frac, idx) in score]
+            return [(frac, idx) for (frac, idx) in score]
 
         model = _read_model(model_filename)
         vtype = model.getAttr("vtype", model.getVars())
@@ -379,7 +385,8 @@ class OweMeh2001Compression:
             if sense * best_val >= sense * globalbnd:
                 assert best_dir is not None
                 assert best_vals is not None
-                _replace(tree, node_id, best_dir.pi, best_dir.pi_0, best_vals)
+                if self.modify_tree:
+                    _replace(tree, node_id, best_dir.pi, best_dir.pi_0, best_vals)
                 return COMPRESSED
             else:
                 return UNCOMPRESSABLE
@@ -412,7 +419,7 @@ class MahChi2013Compression:
 
     def compress(self, model_filename: str, tree_filename: str) -> Tuple[dict, dict]:
         initial_time = time()
-        tree = _read_json(tree_filename)
+        tree = _read_tree(tree_filename)
         stats = _stats_init(model_filename, tree_filename, tree)
 
         # Run DropCompression first
@@ -509,12 +516,20 @@ class MahChi2013Compression:
 # -----------------------------------------------------------------------------
 
 
-def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
+def _append_children(node, pending):
+    for child_id in node["children"]:
+        # Skip leaf nodes
+        if len(node["children"]) == 0:
+            continue
+        pending.put(child_id)
+
+def _down_search(tree: dict, stats: dict, callback: Callable, comprehensive=True) -> None:
     initial_time = time()
     pending: Queue = Queue()
     pending.put("0")
     while not pending.empty():
         node_id = pending.get()
+        node = tree["nodes"][node_id]
         initial_node_time = time()
         logger.debug(f"Visiting node {node_id}")
         stats["nodes_visited"] += 1
@@ -523,19 +538,22 @@ def _down_search(tree: dict, stats: dict, callback: Callable) -> None:
         except TimeoutError:
             logger.debug("Time limit reached. Aborting.")
             return
+
+        elapsed_time = time() - initial_node_time
+        node["processing time"] = elapsed_time
         logger.debug(
-            f"Visit to node {node_id} took {time() - initial_node_time:.2f} seconds"
+            f"Visit to node {node_id} took {elapsed_time:.2f} seconds"
         )
+
         if result == COMPRESSED:
+            node["compressed?"] = True
             logger.debug(f"Node {node_id} compressed")
-            pass
+            if comprehensive:
+                _append_children(node, pending)
         elif result == UNCOMPRESSABLE:
+            node["compressed?"] = False
             logger.debug(f"Node {node_id} is uncompressable.")
-            for child_id in tree["nodes"][node_id]["children"]:
-                # Skip leaf nodes
-                if len(tree["nodes"][child_id]["children"]) == 0:
-                    continue
-                pending.put(child_id)
+            _append_children(node, pending)
         else:
             raise Exception(f"Unknown callback result: {result}")
     logger.debug(f"Search finished in {time() - initial_time:,.2f} seconds")
@@ -591,7 +609,7 @@ def _drop(tree: dict, root_id: str) -> None:
     root["children"] = []
     root["subtree_bound"] = root["obj"]
     root["subtree_support"] = []
-    root["compressed"] = True
+    root["compressed?"] = True
 
 
 def _replace(
@@ -752,10 +770,13 @@ def _evaluate(
     return best_dir, best_val, best_vals
 
 
-def _read_json(filename: str) -> dict:
+def _read_tree(filename: str) -> dict:
     logger.debug(f"Reading: {filename}")
     with open(filename) as f:
-        return json.load(f)
+        tree = json.load(f)
+        _compute_subtree_size(tree)
+        return tree
+
 
 
 def _read_model(filename: str) -> gp.Model:
@@ -842,6 +863,17 @@ def _write_json(obj, filename):
         json.dump(obj, f, indent=2)
 
 
+def _compute_subtree_size(tree):
+    node_ids = [n["id"] for n in tree["nodes"].values()]
+    node_ids.sort(key=lambda i: tree["nodes"][i]["depth"], reverse=True)
+    for i in node_ids:
+        node = tree["nodes"][i]
+        subtree_size = 1
+        for child_id in node["children"]:
+            child_node = tree["nodes"][child_id]
+            subtree_size += child_node["subtree_size"]
+        node["subtree_size"] = subtree_size
+
 # -----------------------------------------------------------------------------
 
 
@@ -899,7 +931,7 @@ def run(time_limit: float = 86_400) -> None:
         for model_filename in glob("instances/models/miplib2017/*.mps.gz")
         for tree_name in ["RB"]
         for (method_name, method) in {
-            "drop": DropCompression(),
+            # "drop": DropCompression(),
             # "revised": OweMeh2001Compression(
             #     time_limit=time_limit,
             #     max_vars=5,
@@ -911,6 +943,7 @@ def run(time_limit: float = 86_400) -> None:
                 max_vars=1_000_000,
                 max_iterations=1_000_000,
                 tree_search=_down_search,
+                modify_tree=False,
             ),
         }.items()
     ]
