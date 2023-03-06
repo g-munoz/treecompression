@@ -1,17 +1,24 @@
 import json
 from copy import deepcopy
 import matplotlib.pyplot as plt
-from random import shuffle
+from random import shuffle, random
 from os.path import basename
 from glob import glob
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeRegressor, plot_tree
-from sklearn.linear_model import LinearRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from sklearn.tree import DecisionTreeRegressor, plot_tree, DecisionTreeClassifier
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.dummy import DummyClassifier
 import numpy as np
 from tqdm.auto import tqdm
+from xgboost import XGBClassifier
+from p_tqdm import p_umap
+
+SHOULD_MAKE_TIMES_UNIFORM = False
 
 _precision = 2
 
@@ -114,7 +121,6 @@ def simulate(
     tree,
     node_seq,
     time_limit,
-    should_make_times_uniform=False,
 ):
     times = [0]
     sizes = [len(tree["nodes"])]
@@ -133,11 +139,7 @@ def simulate(
             continue
 
         # Process the node
-        if should_make_times_uniform:
-            current_time += 1
-        else:
-            current_time += node["processing time"]
-
+        current_time += node["processing time"]
         if current_time > time_limit:
             times.append(time_limit)
             sizes.append(len(tree["nodes"]))
@@ -157,7 +159,7 @@ class RandomSequence:
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = list(tree["nodes"].keys())
         shuffle(seq)
         return seq
@@ -175,11 +177,25 @@ class ExpertSequence:
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = list(tree["nodes"].keys())
+        shuffle(seq)
         seq.sort(
             key=lambda node_id: self._score(tree, node_id),
             reverse=True,
+        )
+        return seq
+
+
+class FastSequence:
+    def fit(self, trees):
+        pass
+
+    def predict(self, tree, stats):
+        seq = list(tree["nodes"].keys())
+        shuffle(seq)
+        seq.sort(
+            key=lambda node_id: (tree["nodes"][node_id]["processing time"]),
         )
         return seq
 
@@ -188,7 +204,7 @@ class DepthFirstSequence:
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = []
         stack = ["0"]
         while len(stack) > 0:
@@ -203,7 +219,7 @@ class NodeIdSequence:
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = [int(n) for n in tree["nodes"]]
         seq.sort(reverse=True)
         return [str(n) for n in seq]
@@ -213,8 +229,9 @@ class SubtreeSizeSequence:
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = list(tree["nodes"].keys())
+        shuffle(seq)
         seq.sort(key=lambda node_id: tree["nodes"][node_id]["subtree_size"])
         return seq
 
@@ -228,20 +245,22 @@ class GapSequence:
         if node["obj"] >= global_bnd:
             return 0
         else:
-            return (global_bnd - node["obj"]) / global_bnd
+            return abs(global_bnd - node["obj"]) / abs(global_bnd)
 
     def fit(self, trees):
         pass
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         seq = list(tree["nodes"].keys())
+        shuffle(seq)
         seq.sort(key=lambda node_id: GapSequence._score(tree, node_id))
         return seq
 
 
 class MLSequence:
-    def __init__(self, clf):
+    def __init__(self, clf, proba=True):
         self.clf = clf
+        self.proba = proba
 
     def _extract_features(self, trees):
         x = []
@@ -250,16 +269,12 @@ class MLSequence:
             for (node_id, node) in tree["nodes"].items():
                 if node["dropped?"]:
                     continue
-                global_bnd = tree["nodes"]["0"]["subtree_bound"]
-                assert node["obj"] < global_bnd
-                dist = (global_bnd - node["obj"]) / global_bnd
-
                 x.append(
                     [
                         int(node_id),
                         node["depth"],
                         node["subtree_size"],
-                        dist,
+                        GapSequence._score(tree, node_id),
                         # node["compressed?"],
                         # node["subtree_size"] / node["processing time"],
                     ]
@@ -272,8 +287,8 @@ class MLSequence:
             for (node_id, node) in tree["nodes"].items():
                 if node["dropped?"]:
                     continue
-                y.append([ExpertSequence._score(tree, node_id)])
-        return np.array(y).astype(float)
+                y.append(node["compressed?"])
+        return np.array(y).astype(int)
 
     def fit(self, trees):
         x = self._extract_features(trees)
@@ -284,61 +299,87 @@ class MLSequence:
         # fig = plt.figure(figsize=(12, 8))
         # plot_tree(self.clf, proportion=True)
 
-    def predict(self, tree):
+    def predict(self, tree, stats):
         x = self._extract_features([tree])
-        y = self.clf.predict(x)
+        if self.proba:
+            y_pred = self.clf.predict_proba(x)[:, 0]
+        else:
+            y_pred = self.clf.predict(x)
         scores = []
+        y_true = []
         offset = 0
+
         for (node_id, node) in tree["nodes"].items():
             if node["dropped?"]:
                 continue
-            scores.append((y[offset], node_id))
+            y_true.append(int(node["compressed?"]))
+            scores.append(
+                (
+                    y_pred[offset],  # * node["subtree_size"],
+                    node["subtree_size"],
+                    random(),
+                    node_id,
+                )
+            )
             offset += 1
-        shuffle(scores)
-        scores.sort(reverse=True)
-        return [t[1] for t in scores]
+        scores.sort()
+        # stats["Accuracy"] = accuracy_score(y_true, y_pred)
+        return [t[3] for t in scores]
 
 
 def generate_chart(all_filenames, time_limit, methods):
     trees = []
     filenames = []
-    for filename in tqdm(all_filenames):
-        with open(filename) as file:
-            tree = json.load(file)
+    for tree_filename in tqdm(all_filenames, desc="read"):
+        with open(tree_filename) as tree_file:
+            tree = json.load(tree_file)
 
             # Skip small trees
             if len(tree["nodes"]) < 100:
                 continue
 
             # Drop all nodes that can be dropped
+            compressed_count = 0
             for (node_id, node) in tree["nodes"].items():
                 if node["dropped?"]:
                     _drop(tree, node_id)
+                elif node["compressed?"]:
+                    compressed_count += 1
+
+            # Skip incompressible instances
+            if compressed_count == 0:
+                continue
+
+            if SHOULD_MAKE_TIMES_UNIFORM:
+                for (node_id, node) in tree["nodes"].items():
+                    node["processing time"] = 1
 
             trees.append(tree)
-            filenames.append(filename)
+            filenames.append(tree_filename)
 
-    train_filenames, test_filenames, train_trees, test_trees = train_test_split(
-        filenames,
-        trees,
-        test_size=0.50,
-        random_state=42,
-    )
+    test_filenames, test_trees = filenames, trees
 
-    with open("split.json", "w") as file:
-        json.dump(
-            {
-                "train": train_filenames,
-                "test": test_filenames,
-            },
-            file,
-        )
+    # train_filenames, test_filenames, train_trees, test_trees = train_test_split(
+    #     filenames,
+    #     trees,
+    #     test_size=0.50,
+    #     random_state=42,
+    # )
 
-    for method in methods.values():
-        method.fit(train_trees)
+    # with open("split.json", "w") as file:
+    #     json.dump(
+    #         {
+    #             "train": train_filenames,
+    #             "test": test_filenames,
+    #         },
+    #         file,
+    #     )
+
+    # for method in tqdm(methods.values(), desc="fit"):
+    #     method.fit(train_trees)
 
     data = []
-    for (filename, tree) in zip(tqdm(test_filenames), test_trees):
+    for (filename, tree) in zip(tqdm(test_filenames, desc="simulate"), test_trees):
         instance = basename(filename).replace(".tree.json", "")
 
         if len(tree["nodes"]) < 100:
@@ -349,20 +390,29 @@ def generate_chart(all_filenames, time_limit, methods):
 
         fig = plt.figure(figsize=(8, 4))
         for (method_name, method) in methods.items():
-            seq = method.predict(tree)
+            stats = {
+                "Instance": instance,
+                "Method": method_name,
+            }
+            seq = method.predict(tree, stats)
             times, sizes = simulate(tree, seq, time_limit)
-            data.append(
+            auc = 0
+            for i in range(1, len(times)):
+                auc += (times[i] - times[i - 1]) * sizes[i]
+            auc = 100 * auc / (sizes[0] * time_limit)
+            stats.update(
                 {
-                    "Instance": instance,
-                    "Method": method_name,
+                    "AUC (%)": auc,
                     "Time (s)": times[-1],
                     "Nodes visited": len(times) - 1,
                     "Original tree size": sizes[0],
                     "Compressed tree size": sizes[-1],
                 }
             )
+            data.append(stats)
 
             plt.step(times, sizes, where="post", linewidth=1.5)
+
         plt.title(f"{instance} ({time_limit})")
         plt.xlabel("Time (s)")
         plt.ylabel("Node count")
@@ -387,26 +437,32 @@ def generate_table(data, time_limit):
 def main():
     methods = {
         # "ML:Tree": MLSequence(
-        #     DecisionTreeRegressor(
-        #         max_depth=10,
+        #     DecisionTreeClassifier(
+        #         max_depth=5,
         #         min_impurity_decrease=1e-3,
         #     )
         # ),
-        # "ML:LinReg": MLSequence(
+        # "ML:LogReg": MLSequence(
         #     make_pipeline(
         #         StandardScaler(),
-        #         LinearRegression(),
-        #     )
+        #         LogisticRegression(),
+        #     ),
         # ),
+        # "ML:GBoost": MLSequence(
+        #     HistGradientBoostingClassifier(max_depth=5),
+        # ),
+        # "ML:Dummy": MLSequence(DummyClassifier()),
+        # "ML": MLSequence(XGBClassifier()),
         "DFS": DepthFirstSequence(),
         "Random": RandomSequence(),
         "NodeId": NodeIdSequence(),
         "SubtreeSize": SubtreeSizeSequence(),
         "Gap": GapSequence(),
+        # "Exp:Fast": FastSequence(),
         "Expert": ExpertSequence(),
     }
-    for time_limit in [86400]:
-        filenames = sorted(glob("../results/RB/heuristic/miplib2017/p*.tree.json"))
+    for time_limit in [3600]:
+        filenames = sorted(glob("../results/RB/heuristic/miplib2017/*.tree.json"))
         data = generate_chart(
             filenames,
             time_limit=time_limit,
