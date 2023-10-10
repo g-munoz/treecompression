@@ -19,7 +19,7 @@ def thresholdcallbak(model, where):
         if objbst > deltathresh:
             model.terminate()
 
-def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize):
+def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
 
 	### getting necessary parameters ###
@@ -73,6 +73,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	disj.setParam("TimeLimit",nodetimelimit)
 	disj.setParam("DualReductions",0)
 	disj.setParam("Threads",1)
+	disj.setParam("Seed", seed)
 	
 	p = [None for i in range(totalcons)]
 	q = [None for i in range(totalcons)]
@@ -216,7 +217,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	return 1, np.round(solX), np.round(pi0.X), disj.runtime
 
 
-def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
+def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
 	#model_orig = read(args[0])
 	model_orig = args[0]
@@ -243,7 +244,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 	
 	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize)
+	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed)
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
@@ -307,6 +308,6 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize):
 			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
 			success  = 0
 
-	return success, runtime
+	return success, runtime, pi, pi0
 
 #findDisjunction(sys.argv)

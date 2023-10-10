@@ -23,6 +23,9 @@ disjsuppsize = GRB.INFINITY
 dropnodecount = 0
 compressnodecount = 0
 
+current_seed = 00000
+disjsummary = {}
+
 def canbeDropped(node,tree):
 	nodebnd = float(tree["nodes"][node]["obj"])
 	globalbnd = float(tree["nodes"]["0"]["subtree_bound"])
@@ -38,6 +41,8 @@ def downtreesearchDFS(node, tree):
 
 	global compressnodecount
 	global dropnodecount
+	global current_seed
+	global disjsummary
 	#print("DFS visiting node ", node)
 	nodecount = 1
 	nodesvisited = 1
@@ -52,8 +57,13 @@ def downtreesearchDFS(node, tree):
 		return nodecount, nodesvisited
 
 	if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
-		success, runtime = main(node,tree)
+		success, runtime, pi, pi0 = main(node,tree)
 		print("NODEINFO:", node, runtime, success)
+
+		if success:
+			disjsummary[current_seed]["Nodes"][node] = {}
+			disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
+			disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
 	else:
 		success = False
 		nodesvisited = 0
@@ -98,8 +108,13 @@ def downtreesearchBFS(startnode, tree):
 			continue
 
 		if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
-			success, runtime = main(node,tree)
+			success, runtime, pi, pi0 = main(node,tree)
 			print("NODEINFO:", node, runtime, success)
+
+			if success:
+				disjsummary[current_seed]["Nodes"][node] = {}
+				disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
+				disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
 		else:
 			success = False
 			nodesvisited -= 1
@@ -139,7 +154,11 @@ def uptreesearch(tree):
 			if canDrop: 
 				success = 2
 			else:
-				success, runtime = main(node,tree)
+				success, runtime, pi, pi0 = main(node,tree)
+				if success:
+					disjsummary[current_seed]["Nodes"][node] = {}
+					disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
+					disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
 			
 		nodesvisited += 1
 		
@@ -230,7 +249,7 @@ def main(node_id, tree):
 		for i in subtreesupp:
 			args.append(str(i)) #we accumulate
 	
-	return findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize)
+	return findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, current_seed)
 
 parser = argparse.ArgumentParser(description='Run tree search')
 
@@ -300,16 +319,28 @@ if args.nodrop:
 if args.usesubtreebound:
 	usesubtreebound = True
 
-starttime = time.time()
-nodesvisited = 0
+seeds = [11111, 22222, 12345, 321321, 987789]
+#seeds = [11111, 22222]
 
-if not args.upsearch:
-	if args.bfs:
-		nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
+for i in seeds:
+	current_seed = i
+	disjsummary[i] = {}
+	disjsummary[i]["Nodes"] = {}
+
+	starttime = time.time()
+	nodesvisited = 0
+
+	if not args.upsearch:
+		if args.bfs:
+			nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
+		else:
+			nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
 	else:
-		nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
-else:
-	nodecount, nodesvisited = uptreesearch(tree)
+		nodecount, nodesvisited = uptreesearch(tree)
 
-print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
+	disjsummary[i]["CompTreeSize"] = nodecount
+	print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
 
+disjunctionsout_name = filename + "disjunctions.tree.json" ## TODO: this name should also have the treename used
+with open(disjunctionsout_name, 'w') as fp:
+	json.dump(disjsummary, fp, indent=4)
