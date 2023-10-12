@@ -329,6 +329,8 @@ for i in seeds:
 
 	starttime = time.time()
 	nodesvisited = 0
+	compressnodecount = 0
+	dropnodecount = 0
 
 	if not args.upsearch:
 		if args.bfs:
