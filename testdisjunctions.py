@@ -90,4 +90,4 @@ if not args.quiet:
     print("\n========\n")
 disjmodel.optimize()
 
-print("INFO",modelname,plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
+print("INFO",modelname,len(nodedisjunctions),plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
