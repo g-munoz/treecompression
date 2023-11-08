@@ -27,6 +27,9 @@ parser.add_argument('--strongbranching', action='store_true',
 parser.add_argument('--quiet', action='store_true',
                     help='quiet')
 
+parser.add_argument('--optimal', action='store_true',
+                    help='solve with Gurobi first to provide optimal solution')
+
 args = parser.parse_args()
 
 modelname = args.filename
@@ -45,6 +48,24 @@ if args.timelimit != None:
 if args.quiet:
     disjmodel.setParam("OutputFlag",0)
     plainmodel.setParam("OutputFlag",0)
+
+if args.optimal:
+    optimalmodel = plainmodel.copy()
+    optimalmodel.setParam("TimeLimit",timelimit)
+    optimalmodel.optimize()
+    solvector = [v.X for v in optimalmodel.getVars()]
+
+    plainVars = plainmodel.getVars()
+    disjVars = disjmodel.getVars()
+
+    for i in range(len(plainVars)):
+        plainVars[i].Start = solvector[i]
+        disjVars[i].Start = solvector[i]
+    
+    plainmodel.setParam("Cuts",0)
+    plainmodel.setParam("Heuristics",0)
+    disjmodel.setParam("Cuts",0)
+    disjmodel.setParam("Heuristics",0)  
 
 if args.strongbranching:
     disjmodel.setParam("VarBranch",3)
