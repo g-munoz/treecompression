@@ -52,6 +52,7 @@ if args.quiet:
 if args.optimal:
     optimalmodel = plainmodel.copy()
     optimalmodel.setParam("TimeLimit",timelimit)
+    optimalmodel.setParam("Threads",1)
     optimalmodel.optimize()
     solvector = [v.X for v in optimalmodel.getVars()]
 
