@@ -122,7 +122,7 @@ for i in range(len(seeds)):
         print("\n========\n")
     disjmodel.optimize()
 
-    print("INFO",modelname+"_"+i,len(nodedisjunctions),plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
+    print("INFO",modelname+"_"+str(i),len(nodedisjunctions),plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
 
     disjmodel.reset(1)
     plainmodel.reset(1)
