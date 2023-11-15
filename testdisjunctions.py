@@ -42,6 +42,8 @@ filename, file_extension = modelname.split(os.extsep,1)
 f = open(args.disjfile)
 disjdata = json.load(f)
 
+solvector = []
+
 if args.timelimit != None:
 	timelimit = args.timelimit
 
@@ -124,3 +126,10 @@ for i in range(len(seeds)):
 
     disjmodel.reset(1)
     plainmodel.reset(1)
+
+    if args.optimal:
+        plainVars = plainmodel.getVars()
+        disjVars = disjmodel.getVars()
+        for i in range(len(plainVars)):
+            plainVars[i].Start = solvector[i]
+            disjVars[i].Start = solvector[i]
