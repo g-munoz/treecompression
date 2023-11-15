@@ -102,14 +102,25 @@ for i in disjdata.keys():
             nodedisjunctions.append(disj)
             z = disjmodel.addVar(vtype=GRB.INTEGER, lb= -GRB.INFINITY)
             disjmodel.addConstr(z == np.dot(disj,variables))
-        
+
+if len(nodedisjunctions) == 0:
+     exit(0)
 #print("Disj Collection Size", len(nodedisjunctions))
 #plainmodel.write("orig.lp")
-#disjmodel.write("disjs.lp")
+disjmodel.write(filename+"_disjs.lp")
 
-plainmodel.optimize()
-if not args.quiet:
-    print("\n========\n")
-disjmodel.optimize()
+seeds = [11111, 22222, 12345, 321321, 987789]
+for i in range(len(seeds)):
+    seed =  seeds[i]
+    disjmodel.setParam("Seed", seed)
+    plainmodel.setParam("Seed", seed)
 
-print("INFO",modelname,len(nodedisjunctions),plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
+    plainmodel.optimize()
+    if not args.quiet:
+        print("\n========\n")
+    disjmodel.optimize()
+
+    print("INFO",modelname+"_"+i,len(nodedisjunctions),plainmodel.NodeCount,disjmodel.NodeCount,plainmodel.MIPGap,disjmodel.MIPGap,plainmodel.Runtime,disjmodel.Runtime)
+
+    disjmodel.reset(1)
+    plainmodel.reset(1)
