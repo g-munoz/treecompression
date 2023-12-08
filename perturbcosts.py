@@ -130,8 +130,8 @@ for iter in range(5):
         disjmodel.setParam("Cuts",0)
         disjmodel.setParam("Heuristics",0)  
 
-    plainmodel.write(filename+str(iter)+"_disjs.lp")
-    disjmodel.write(filename+str(iter)+"_disjs.lp")
+    #plainmodel.write(filename+str(iter)+"_disjs.lp")
+    #disjmodel.write(filename+str(iter)+"_disjs.lp")
 
     plainmodel.optimize()
     if not args.quiet:
