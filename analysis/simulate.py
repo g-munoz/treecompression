@@ -22,6 +22,8 @@ SHOULD_MAKE_TIMES_UNIFORM = False
 
 _precision = 2
 
+plt.rcParams["font.family"] = "serif"
+
 
 def highlight_max(row, props=""):
     return np.where(
@@ -266,7 +268,7 @@ class MLSequence:
         x = []
         for tree in trees:
             assert tree["sense"] == "min"
-            for (node_id, node) in tree["nodes"].items():
+            for node_id, node in tree["nodes"].items():
                 if node["dropped?"]:
                     continue
                 x.append(
@@ -284,7 +286,7 @@ class MLSequence:
     def _extract_labels(self, trees):
         y = []
         for tree in trees:
-            for (node_id, node) in tree["nodes"].items():
+            for node_id, node in tree["nodes"].items():
                 if node["dropped?"]:
                     continue
                 y.append(node["compressed?"])
@@ -309,7 +311,7 @@ class MLSequence:
         y_true = []
         offset = 0
 
-        for (node_id, node) in tree["nodes"].items():
+        for node_id, node in tree["nodes"].items():
             if node["dropped?"]:
                 continue
             y_true.append(int(node["compressed?"]))
@@ -327,45 +329,43 @@ class MLSequence:
         return [t[3] for t in scores]
 
 
-def generate_chart(all_filenames, time_limit, methods):
-    trees = []
-    filenames = []
-    for tree_filename in tqdm(all_filenames, desc="read"):
-        with open(tree_filename) as tree_file:
-            tree = json.load(tree_file)
+def read(filename):
+    with open(filename) as tree_file:
+        tree = json.load(tree_file)
+        original_size = len(tree["nodes"])
 
-            # Skip small trees
-            if len(tree["nodes"]) < 100:
-                continue
+        # Skip small trees
+        if original_size < 100:
+            return None, None
 
-            # Drop all nodes that can be dropped
-            compressed_count = 0
-            for (node_id, node) in tree["nodes"].items():
-                if node["dropped?"]:
-                    _drop(tree, node_id)
-                elif node["compressed?"]:
-                    compressed_count += 1
+        # Drop all nodes that can be dropped
+        compressed_count = 0
+        for node_id, node in tree["nodes"].items():
+            if node["dropped?"]:
+                _drop(tree, node_id)
+            elif node["compressed?"]:
+                compressed_count += 1
 
-            # Skip incompressible instances
-            if compressed_count == 0:
-                continue
+        # Skip incompressible instances
+        if compressed_count == 0:
+            return None, None
 
-            if SHOULD_MAKE_TIMES_UNIFORM:
-                for (node_id, node) in tree["nodes"].items():
-                    node["processing time"] = 1
+        if SHOULD_MAKE_TIMES_UNIFORM:
+            for node_id, node in tree["nodes"].items():
+                node["processing time"] = 1
 
-            trees.append(tree)
-            filenames.append(tree_filename)
+        return tree, original_size
 
-    test_filenames, test_trees = filenames, trees
 
+def fit():
+    pass
+    # test_filenames, test_trees = filenames, trees
     # train_filenames, test_filenames, train_trees, test_trees = train_test_split(
     #     filenames,
     #     trees,
     #     test_size=0.50,
     #     random_state=42,
     # )
-
     # with open("split.json", "w") as file:
     #     json.dump(
     #         {
@@ -374,101 +374,113 @@ def generate_chart(all_filenames, time_limit, methods):
     #         },
     #         file,
     #     )
-
     # for method in tqdm(methods.values(), desc="fit"):
     #     method.fit(train_trees)
 
+
+def generate_chart(filename, tree, original_size, time_limits, methods):
     data = []
-    for (filename, tree) in zip(tqdm(test_filenames, desc="simulate"), test_trees):
-        instance = basename(filename).replace(".tree.json", "")
-
-        if len(tree["nodes"]) < 100:
-            continue
-
-        for n in tree["nodes"].values():
-            n["global_bound"] = tree["nodes"]["0"]["subtree_bound"]
-
-        fig = plt.figure(figsize=(8, 4))
-        for (method_name, method) in methods.items():
+    instance = basename(filename).replace(".tree.json", "")
+    for time_limit in time_limits:
+        fig = plt.figure(figsize=(6, 4))
+        for method_name, method in methods.items():
             stats = {
                 "Instance": instance,
                 "Method": method_name,
+                "Time limit (s)": time_limit,
             }
             seq = method.predict(tree, stats)
             times, sizes = simulate(tree, seq, time_limit)
             auc = 0
             for i in range(1, len(times)):
-                auc += (times[i] - times[i - 1]) * sizes[i]
-            auc = 100 * auc / (sizes[0] * time_limit)
+                auc += (times[i] - times[i - 1]) * sizes[i - 1]
+            auc = 100 * auc / (original_size * time_limit)
             stats.update(
                 {
                     "AUC (%)": auc,
                     "Time (s)": times[-1],
                     "Nodes visited": len(times) - 1,
-                    "Original tree size": sizes[0],
+                    "Original tree size": original_size,
                     "Compressed tree size": sizes[-1],
+                    "Compression ratio (%)": 100
+                    * (original_size - sizes[-1])
+                    / original_size,
                 }
             )
             data.append(stats)
-
             plt.step(times, sizes, where="post", linewidth=1.5)
-
         plt.title(f"{instance} ({time_limit})")
         plt.xlabel("Time (s)")
         plt.ylabel("Node count")
-        plt.legend(methods.keys())
+        plt.legend(methods.keys(), loc="upper right")
         plt.tight_layout()
-        plt.savefig(f"chart-{time_limit}-{instance}.png", dpi=150)
+        plt.savefig(f"out/chart-{time_limit:06d}-{instance}.png", dpi=150)
         plt.close()
     return data
 
 
-def generate_table(data, time_limit):
-    summary = pd.DataFrame(data)
-    summary = summary.groupby(["Instance", "Method"]).mean().unstack()
-    # del summary[("Original tree size", "Expert")]
-    # del summary[("Original tree size", "Random")]
-    summary.loc["Mean", :] = summary.mean(axis=0)
-    summary.round(2).to_csv(f"summary-{time_limit}.csv")
-    df = summary.style.pipe(default_style)
-    df.to_html(f"summary-{time_limit}.html")
+# def generate_table(data):
+# summary = pd.DataFrame(data)
+# summary = summary.groupby(["Instance", "Method", "Time limit (s)"]).mean().unstack()
+# summary.loc["Mean", :] = summary.mean(axis=0)
+# summary.to_pickle(f"out/summary.pkl")
+# summary = summary[["AUC (%)", "Compressed tree size"]]
+# summary.round(2).to_csv(f"out/summary.csv")
+# df = summary.style.pipe(default_style)
+# df.to_html(f"out/summary.html")
 
 
-def main():
-    methods = {
-        # "ML:Tree": MLSequence(
-        #     DecisionTreeClassifier(
-        #         max_depth=5,
-        #         min_impurity_decrease=1e-3,
-        #     )
-        # ),
-        # "ML:LogReg": MLSequence(
-        #     make_pipeline(
-        #         StandardScaler(),
-        #         LogisticRegression(),
-        #     ),
-        # ),
-        # "ML:GBoost": MLSequence(
-        #     HistGradientBoostingClassifier(max_depth=5),
-        # ),
-        # "ML:Dummy": MLSequence(DummyClassifier()),
-        # "ML": MLSequence(XGBClassifier()),
-        "DFS": DepthFirstSequence(),
-        "Random": RandomSequence(),
-        "NodeId": NodeIdSequence(),
-        "SubtreeSize": SubtreeSizeSequence(),
-        "Gap": GapSequence(),
-        # "Exp:Fast": FastSequence(),
-        "Expert": ExpertSequence(),
-    }
-    for time_limit in [3600]:
-        filenames = sorted(glob("../results/RB/heuristic/miplib2017/*.tree.json"))
-        data = generate_chart(
-            filenames,
-            time_limit=time_limit,
+def main(time_limits=[900, 3600, 14400]):
+    def _process(filename):
+        tree, original_size = read(filename)
+        if not tree:
+            return []
+        methods = {
+            # "ML:Tree": MLSequence(
+            #     DecisionTreeClassifier(
+            #         max_depth=5,
+            #         min_impurity_decrease=1e-3,
+            #     )
+            # ),
+            # "ML:LogReg": MLSequence(
+            #     make_pipeline(
+            #         StandardScaler(),
+            #         LogisticRegression(),
+            #     ),
+            # ),
+            # "ML:GBoost": MLSequence(
+            #     HistGradientBoostingClassifier(max_depth=5),
+            # ),
+            # "ML:Dummy": MLSequence(DummyClassifier()),
+            # "ML": MLSequence(XGBClassifier()),
+            # "Exp:Fast": FastSequence(),
+            "DFS": DepthFirstSequence(),
+            "Random": RandomSequence(),
+            "NodeId": NodeIdSequence(),
+            "SubtreeSize": SubtreeSizeSequence(),
+            "Gap": GapSequence(),
+            "Expert": ExpertSequence(),
+        }
+        return generate_chart(
+            filename,
+            tree,
+            original_size,
+            time_limits=time_limits,
             methods=methods,
         )
-        generate_table(data, time_limit)
+
+    data = p_umap(
+        _process,
+        sorted(glob("../results/RB/heuristic/miplib2017/*.tree.json")),
+        num_cpus=32,
+        smoothing=0,
+    )
+
+    combined = []
+    for d in data:
+        combined.extend(d)
+    combined = pd.DataFrame(combined)
+    combined.to_pickle("out/results.pkl")
 
 
 main()
