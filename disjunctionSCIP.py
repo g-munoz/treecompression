@@ -1,9 +1,10 @@
-from gurobipy import *
+from pyscipopt import *
 import pandas as pd
 import random
 import sys
 import os
 import numpy as np
+import math
 
 #from scipy.sparse import csr_matrix
 #from scipy.sparse import csr_array
@@ -21,16 +22,16 @@ def thresholdcallbak(model, where):
 
 def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
-
 	### getting necessary parameters ###
-	n = model.numVars
-	m = model.numConstrs
+	n = model.getNVars()
+	m = model.getNConss()
 	
 	intvars = set()
-	constrs = model.getConstrs()
+	constrs = model.getConss()
 	
 	objcoeff = 1
-	if model.ModelSense == GRB.MAXIMIZE:
+	print(model.getObjectiveSense())
+	if model.getObjectiveSense() == 'maximize':
 		objcoeff = -1
 
 	#first we count the total number of constraints (double-count eqs)
@@ -39,11 +40,12 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	varbd_std_map = [[-1,-1] for i in range(n)]
 	
 	for j in range(m):
-		sense = constrs[j].getAttr("Sense")
-		if sense == '>' or sense == '<':
+		#sense = constrs[j].getAttr("Sense")
+		lhs = model.getLhs(constrs[j])
+		rhs = model.getRhs(constrs[j])
+		if lhs <= -model.infinity() or rhs >= model.infinity(): #In case of one-sided inequalities
 			cons_std_map[j] = [totalcons]
 			totalcons += 1
-			
 		else:
 			cons_std_map[j] = [totalcons, totalcons+1]
 			#print("aAAAAAA")
@@ -53,27 +55,33 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	#exit(0)
 	allvars = model.getVars()	
 	
-	for i in range(model.numVars):
+	for i in range(model.getNVars()):
 		var = allvars[i]	
-		if var.lb > -GRB.INFINITY:
+		if var.getLbGlobal() > -model.infinity():
 			varbd_std_map[i][0] = totalcons
 			totalcons += 1
-		if var.ub < GRB.INFINITY:
+		if var.getUbGlobal() < model.infinity():
 			varbd_std_map[i][1] = totalcons
 			totalcons += 1
 			
-		if var.vtype == GRB.INTEGER or var.vtype == GRB.BINARY:
+		if var.vtype == 'I' or var.vtype == 'B':
 			intvars.add(var.index)
 	
 	### set-up of disj model ###
-	M = disjcoefbound
 	
 	disj = Model()
-	disj.setParam("OutputFlag",0)
-	disj.setParam("TimeLimit",nodetimelimit)
-	disj.setParam("DualReductions",0)
-	disj.setParam("Threads",1)
-	disj.setParam("Seed", seed)
+
+	M = 0
+	if disjcoefbound == None:
+		M = disj.infinity()
+	else:
+		M = disjcoefbound
+
+	#disj.hideOutput(True)
+ 
+	disj.setRealParam("limits/time",nodetimelimit)
+	disj.setIntParam("lp/threads",1)
+	disj.setIntParam("randomization/permutationseed",seed)
 	
 	p = [None for i in range(totalcons)]
 	q = [None for i in range(totalcons)]
@@ -89,132 +97,151 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		lhscoefbound = M
 		if disjsuppsize == 1: #when support size is one, lhs coefficient should be <= 1
 			lhscoefbound = 1
-		pi[i] = disj.addVar(vtype=GRB.INTEGER, lb=-lhscoefbound, ub=lhscoefbound, name="pi%d"%i)
+		pi[i] = disj.addVar(vtype='I', lb=-lhscoefbound, ub=lhscoefbound, name="pi%d"%i)
 		
-	pi0 = disj.addVar(vtype=GRB.INTEGER, lb=-M, ub=M, name="pirhs")
+	pi0 = disj.addVar(vtype='I', lb=-M, ub=M, name="pirhs")
 	
 	delta = disj.addVar(lb=0.0, name="delta")
 
 
 	### support constraint and opt sense
-
 	for i in range(n):
 		if i not in intvars or i not in support:
-			disj.addConstr(pi[i] == 0)
+			disj.addCons(pi[i] == 0)
 
-	disj.setObjective(delta, GRB.MAXIMIZE)
+	disj.setObjective(delta, 'maximize')
 
 	### p and q constraints ###
 	
 	# m.addConstr( - np.transpose(A) @ p - c @ sL - pi == np.zeros(nvars), name="pc" )
 	# m.addConstr( - np.transpose(A) @ q - c @ sR + pi == np.zeros(nvars), name="qc" )
-	for var in allvars:
-		new_cons_disj_p = LinExpr()
-		new_cons_disj_q = LinExpr()
+ 
+	for i in range(n):
+		var = allvars[i]
+		new_cons_disj_p = Expr()
+		new_cons_disj_q = Expr()
 		
-		
-		for cons in constrs:
-			coeff = model.getCoeff(cons, var)
-			sense = cons.getAttr("Sense")
-			j = cons.index
+		for j in range(m):
+			cons = constrs[j]
+			linexp = model.getValsLinear(cons)
+			#print("\n",linexp,"\n")
+			#print(allvars)
+			#coeff = model.getCoeff(cons, var)
+   
+			coeff = 0
+			if var.name in linexp.keys():
+				coeff = linexp[var.name]
+
+			lhs = model.getLhs(cons)
+			rhs = model.getRhs(cons)
+
+			#sense = cons.getAttr("Sense")
+			#j = cons.index
 			
 			#print(coeff, p[cons_std_map[j][0]])
-			if sense == '>':
-				new_cons_disj_p += coeff*p[cons_std_map[j][0]]
-				new_cons_disj_q += coeff*q[cons_std_map[j][0]]
-			elif sense == '<':
-				new_cons_disj_p += -coeff*p[cons_std_map[j][0]]
-				new_cons_disj_q += -coeff*q[cons_std_map[j][0]]
-			else:
+			if lhs > -model.infinity() and rhs < model.infinity(): #if inequality is two-sided
 				new_cons_disj_p += (coeff*p[cons_std_map[j][0]] - coeff*p[cons_std_map[j][1]])
 				new_cons_disj_q += (coeff*q[cons_std_map[j][0]] - coeff*q[cons_std_map[j][1]])
-
-		if varbd_std_map[var.index][0] != -1:
-			new_cons_disj_p += (p[varbd_std_map[var.index][0]])
-			new_cons_disj_q += (q[varbd_std_map[var.index][0]])
+			elif rhs >= model.infinity(): #if inequality is >=
+				new_cons_disj_p += coeff*p[cons_std_map[j][0]]
+				new_cons_disj_q += coeff*q[cons_std_map[j][0]]
+			else: #if inequality is >=
+				new_cons_disj_p += -coeff*p[cons_std_map[j][0]]
+				new_cons_disj_q += -coeff*q[cons_std_map[j][0]]
+			
+		if varbd_std_map[i][0] != -1:
+			new_cons_disj_p += (p[varbd_std_map[i][0]])
+			new_cons_disj_q += (q[varbd_std_map[i][0]])
 		
-		if varbd_std_map[var.index][1] != -1:
-			new_cons_disj_p += (-p[varbd_std_map[var.index][1]])
-			new_cons_disj_q += (-q[varbd_std_map[var.index][1]])
+		if varbd_std_map[i][1] != -1:
+			new_cons_disj_p += (-p[varbd_std_map[i][1]])
+			new_cons_disj_q += (-q[varbd_std_map[i][1]])
 		
-		new_cons_disj_p += (-sL*var.Obj*objcoeff - pi[var.index])
-		new_cons_disj_q += (-sR*var.Obj*objcoeff + pi[var.index])
+		new_cons_disj_p += (-sL*var.getObj()*objcoeff - pi[i])
+		new_cons_disj_q += (-sR*var.getObj()*objcoeff + pi[i])
 		
-		disj.addConstr(new_cons_disj_p == 0, name=(var.varname+"p"))
-		disj.addConstr(new_cons_disj_q == 0, name=(var.varname+"q"))
+		disj.addCons(new_cons_disj_p == 0, name=(var.name+"p"))
+		disj.addCons(new_cons_disj_q == 0, name=(var.name+"q"))
 		
 	### pb and qb constraints ###
 	# m.addConstr( - np.transpose(b) @ p - sL * K - pi0 >= delta, name="dd" )
 	# m.addConstr( - np.transpose(b) @ q - sR * K + pi0 >= -1 + delta, name="dd2" )
 	
-	new_cons_disj_p = LinExpr()
-	new_cons_disj_q = LinExpr()
+	new_cons_disj_p = Expr()
+	new_cons_disj_q = Expr()
 		
-	for cons in constrs:
-		coeff = cons.rhs
-		sense = cons.getAttr("Sense")
-		j = cons.index
+	for j in range(m):
+		cons = constrs[j]
 
-		if sense == '>':
-			new_cons_disj_p += coeff*p[cons_std_map[j][0]]
-			new_cons_disj_q += coeff*q[cons_std_map[j][0]]
-		elif sense == '<':
-			new_cons_disj_p += -coeff*p[cons_std_map[j][0]]
-			new_cons_disj_q += -coeff*q[cons_std_map[j][0]]
+		lhs = model.getLhs(cons)
+		rhs = model.getRhs(cons)
+		#coeff = cons.rhs
+		#sense = cons.getAttr("Sense")
+
+		#j = cons.index
+
+		if lhs > -model.infinity() and rhs < model.infinity(): #if inequality is two-sided
+			new_cons_disj_p += (lhs*p[cons_std_map[j][0]] - rhs*p[cons_std_map[j][1]])
+			new_cons_disj_q += (lhs*q[cons_std_map[j][0]] - rhs*q[cons_std_map[j][1]])
+		elif rhs >= model.infinity(): #if inequality is >=
+			new_cons_disj_p += lhs*p[cons_std_map[j][0]]
+			new_cons_disj_q += lhs*q[cons_std_map[j][0]]
 		else:
-			new_cons_disj_p += (coeff*p[cons_std_map[j][0]] - coeff*p[cons_std_map[j][1]])
-			new_cons_disj_q += (coeff*q[cons_std_map[j][0]] - coeff*q[cons_std_map[j][1]])
+			new_cons_disj_p += -rhs*p[cons_std_map[j][0]]
+			new_cons_disj_q += -rhs*q[cons_std_map[j][0]]
 	
-	for var in allvars:			
-		if varbd_std_map[var.index][0] != -1:
-			new_cons_disj_p += (var.lb*p[varbd_std_map[var.index][0]])
-			new_cons_disj_q += (var.lb*q[varbd_std_map[var.index][0]])
+	for i in range(n):
+		var = allvars[i]	
+		if varbd_std_map[i][0] != -1:
+			new_cons_disj_p += (var.getLbGlobal()*p[varbd_std_map[i][0]])
+			new_cons_disj_q += (var.getLbGlobal()*q[varbd_std_map[i][0]])
 		
-		if varbd_std_map[var.index][1] != -1:
-			new_cons_disj_p += (-var.ub*p[varbd_std_map[var.index][1]])
-			new_cons_disj_q += (-var.ub*q[varbd_std_map[var.index][1]])
+		if varbd_std_map[i][1] != -1:
+			new_cons_disj_p += (-var.getUbGlobal()*p[varbd_std_map[i][1]])
+			new_cons_disj_q += (-var.getUbGlobal()*q[varbd_std_map[i][1]])
 			
 	new_cons_disj_p += (-sL*K*objcoeff - pi0 - delta)
 	new_cons_disj_q += (-sR*K*objcoeff + pi0 - delta + 1)
 		
-	disj.addConstr(new_cons_disj_p >= 0, name="pb")
-	disj.addConstr(new_cons_disj_q >= 0, name="pq")
+	disj.addCons(new_cons_disj_p >= 0, name="pb")
+	disj.addCons(new_cons_disj_q >= 0, name="pq")
 	
 	#############################
 	
-	if disjsuppsize < GRB.INFINITY:
+	if disjsuppsize != None:
 		#print("\n\nI should add constraints for a support of size ", disjsuppsize)
 		bigM = 1E5
 		pi_nz = [None for i in range(n)]
 		
 		for i in range(n):
-			pi_nz[i] = disj.addVar(vtype=GRB.BINARY, name="pi_nz%d"%i)
-			disj.addConstr(pi[i] <= bigM*pi_nz[i], name="nz_ub%d"%i)
-			disj.addConstr(pi[i] >= -bigM*pi_nz[i], name="nz_lb%d"%i)
+			pi_nz[i] = disj.addVar(vtype='B', name="pi_nz%d"%i)
+			disj.addCons(pi[i] <= bigM*pi_nz[i], name="nz_ub%d"%i)
+			disj.addCons(pi[i] >= -bigM*pi_nz[i], name="nz_lb%d"%i)
 
-		disj.addConstr(np.sum(pi_nz) <= disjsuppsize)
-		#pi0_nz = disj.addVar(vtype=GRB.BINARY, name="pirhs_nz")
+		disj.addCons(np.sum(pi_nz) <= disjsuppsize)
+		#pi0_nz = disj.addVar(vtype='B', name="pirhs_nz")
 		
 	###################
 
-	disj.update()
+	#disj.update()
 
 	#disj.write('disj.lp')
 	
-	disj.optimize(thresholdcallbak)
-	
-	if disj.status == 5:
+	#disj.optimize(thresholdcallbak)
+	disj.optimize()
+
+	if disj.getStatus() == "unbounded":
 		#print("\nUnbounded problem, probably the proposed bound was too weak\n")
-		return 1, None, None, disj.runtime
+		return 1, None, None, disj.getSolvingTime()
 		
-	if disj.objVal <= 1E-6:
+	if disj.getObjVal() <= 1E-6:
 		#print("\nNo disjuction found\n")
-		return 0, None, None, disj.runtime
+		return 0, None, None, disj.getSolvingTime()
 	
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [pi[i].X for i in range(len(pi))]
 	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
-	return 1, np.round(solX), np.round(pi0.X), disj.runtime
+	return 1, np.round(solX), np.round(pi0.X), disj.getSolvingTime()
 
 
 def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
@@ -227,20 +254,20 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	#c,A,b,intvars = buildAb(model_orig)
 	#print("done.")
 	
-	
 	K = float(args[1])
 	if math.isinf(K):
 		print("Infeasible node considered compressed already")
 		return True
 	
-	support = set()
-	if len(args) <= 2:
-		support = set(range(model_orig.numvars))
-	else:
-		for i in range(2, len(args)):
-			var = model_orig.getVarByName(args[i])
-			if not var == None:
-				support.add(var.index)
+	#old variant that allowed supports to be restricted
+	#support = set()
+	#if len(args) <= 2:
+	support = set(range(model_orig.getNVars()))
+	#else:
+	#	for i in range(2, len(args)):
+	#		var = model_orig.getVarByName(args[i])
+	#		if not var == None:
+	#			support.add(var.index)
 	
 	#print("Formulating disjunction MIP...")
 
@@ -257,35 +284,33 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		disj1 = relaxed.copy()
 		disj2 = relaxed.copy()
 		
-		relaxed.setParam("OutputFlag",0)
-		disj1.setParam("OutputFlag",0)
-		disj2.setParam("OutputFlag",0)
-		disj1.setParam("DualReductions",0)
-		disj2.setParam("DualReductions",0)
+		relaxed.hideOutput(True)
+		disj1.hideOutput(True)
+		disj2.hideOutput(True)
 		
 		varlist1 = disj1.getVars()
 		varlist2 = disj2.getVars()
 		
-		disj1.addConstr(np.dot(pi,varlist1) <= pi0)
-		disj2.addConstr(np.dot(pi,varlist2) >= pi0 + 1)
+		disj1.addCons(np.dot(pi,varlist1) <= pi0)
+		disj2.addCons(np.dot(pi,varlist2) >= pi0 + 1)
 		
 		relaxed.optimize()
 		disj1.optimize()
 		disj2.optimize()
 		
 		if disj1.status == 3 :
-			if disj1.ModelSense == GRB.MAXIMIZE:
-				obj1 = -GRB.INFINITY
+			if disj1.ModelSense == 'maximize':
+				obj1 = -disj1.infinity()
 			else:
-				obj1 = GRB.INFINITY
+				obj1 = disj1.infinity()
 		else:
 			obj1 = disj1.objVal
 		
 		if disj2.status == 3 :
-			if disj2.ModelSense == GRB.MAXIMIZE:
-				obj2 = -GRB.INFINITY
+			if disj2.ModelSense == 'maximize':
+				obj2 = -disj2.infinity()
 			else:
-				obj2 = GRB.INFINITY
+				obj2 = disj2.infinity()
 		else:
 			obj2 = disj2.objVal
 		
@@ -301,10 +326,10 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		# 		print(var, pi[varindex])
 		# print("rhs", pi0)
 
-		if relaxed.ModelSense == GRB.MAXIMIZE and max(obj1,obj2) > K + 1E-4 :
+		if relaxed.ModelSense == 'maximize' and max(obj1,obj2) > K + 1E-4 :
 			print("Warning (Max): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
 			success  = 0
-		elif relaxed.ModelSense == GRB.MINIMIZE and min(obj1,obj2) < K - 1E-4:
+		elif relaxed.ModelSense == 'minimize' and min(obj1,obj2) < K - 1E-4:
 			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
 			success  = 0
 
