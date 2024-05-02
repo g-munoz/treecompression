@@ -5,11 +5,6 @@ import sys
 import os
 import numpy as np
 
-#from scipy.sparse import csr_matrix
-#from scipy.sparse import csr_array
-
-#import matplotlib.pyplot as plt
-
 deltathresh = 1E-3
 
 def thresholdcallbak(model, where):
@@ -19,9 +14,8 @@ def thresholdcallbak(model, where):
         if objbst > deltathresh:
             model.terminate()
 
-def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed):
+def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, node_id):
 	
-
 	### getting necessary parameters ###
 	n = model.numVars
 	m = model.numConstrs
@@ -46,11 +40,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 			
 		else:
 			cons_std_map[j] = [totalcons, totalcons+1]
-			#print("aAAAAAA")
 			totalcons += 2
 	
-	#print(cons_std_map)
-	#exit(0)
 	allvars = model.getVars()	
 	
 	for i in range(model.numVars):
@@ -94,7 +85,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	pi0 = disj.addVar(vtype=GRB.INTEGER, lb=-M, ub=M, name="pirhs")
 	
 	delta = disj.addVar(lb=0.0, name="delta")
-
 
 	### support constraint and opt sense
 
@@ -199,7 +189,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 
 	disj.update()
 
-	#disj.write('disj.lp')
+	#if node_id == "6":
+	#	disj.write('disjGRB.lp')
 	
 	disj.optimize(thresholdcallbak)
 	
@@ -219,14 +210,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 
 def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
-	#model_orig = read(args[0])
 	model_orig = args[0]
-	#support = set(range(model_orig.numvars))
-	#model_orig.write("test.lp")
-	#print("Building A,b...")
-	#c,A,b,intvars = buildAb(model_orig)
-	#print("done.")
-	
 	
 	K = float(args[1])
 	if math.isinf(K):
@@ -234,7 +218,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		return True
 	
 	support = set()
-	if len(args) <= 2:
+	if len(args) <= 3:
 		support = set(range(model_orig.numvars))
 	else:
 		for i in range(2, len(args)):
@@ -244,7 +228,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
 	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed)
+	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, args[2])
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
@@ -288,18 +272,6 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 				obj2 = GRB.INFINITY
 		else:
 			obj2 = disj2.objVal
-		
-		# print("\n==========\n")
-		# #print("Statuses", relaxed.status, disj1.status, disj2.status)
-		# print("Rel/disj1/disj2", relaxed.objVal, obj1, obj2)
-		# print("\n==========\n")
-		
-		# for i in range(model_orig.numVars):
-		# 	var = model_orig.getVars()[i]
-		# 	varindex = var.index
-		# 	if abs(pi[varindex])> 1E-5:
-		# 		print(var, pi[varindex])
-		# print("rhs", pi0)
 
 		if relaxed.ModelSense == GRB.MAXIMIZE and max(obj1,obj2) > K + 1E-4 :
 			print("Warning (Max): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)

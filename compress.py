@@ -241,6 +241,8 @@ def main(node_id, tree):
 	#args.append(nodefilename)
 	args.append(model)
 	args.append(str(bound))
+
+	args.append(str(node_id))
 	
 	#restrict support if requires
 	if restrictedsupp:
@@ -320,6 +322,7 @@ if args.usesubtreebound:
 
 seeds = [11111, 22222, 12345, 321321, 987789]
 #seeds = [11111, 22222]
+#seeds = [11111]
 
 for i in seeds:
 	current_seed = i

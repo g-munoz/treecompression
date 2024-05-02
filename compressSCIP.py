@@ -38,8 +38,6 @@ def constructVarNameDictionary(model):
 	for x in vars:
 		varNameDictionary[x.name] = x
 
-
-
 def canbeDropped(node,tree):
 	nodebnd = float(tree["nodes"][node]["obj"])
 	globalbnd = float(tree["nodes"]["0"]["subtree_bound"])
@@ -188,6 +186,9 @@ def main(node_id, tree):
 	#args.append(nodefilename)
 	args.append(model)
 	args.append(str(bound))
+
+	#For debugging
+	args.append(str(node_id))
 	
 	#restrict support if requires
 	#if restrictedsupp:

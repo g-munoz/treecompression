@@ -20,7 +20,7 @@ def thresholdcallbak(model, where):
         if objbst > deltathresh:
             model.terminate()
 
-def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed):
+def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, node_id):
 	
 	### getting necessary parameters ###
 	n = model.getNVars()
@@ -30,7 +30,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	constrs = model.getConss()
 	
 	objcoeff = 1
-	print(model.getObjectiveSense())
 	if model.getObjectiveSense() == 'maximize':
 		objcoeff = -1
 
@@ -40,7 +39,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	varbd_std_map = [[-1,-1] for i in range(n)]
 	
 	for j in range(m):
-		#sense = constrs[j].getAttr("Sense")
 		lhs = model.getLhs(constrs[j])
 		rhs = model.getRhs(constrs[j])
 		if lhs <= -model.infinity() or rhs >= model.infinity(): #In case of one-sided inequalities
@@ -48,11 +46,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 			totalcons += 1
 		else:
 			cons_std_map[j] = [totalcons, totalcons+1]
-			#print("aAAAAAA")
 			totalcons += 2
 	
-	#print(cons_std_map)
-	#exit(0)
 	allvars = model.getVars()	
 	
 	for i in range(model.getNVars()):
@@ -63,12 +58,11 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		if var.getUbGlobal() < model.infinity():
 			varbd_std_map[i][1] = totalcons
 			totalcons += 1
-			
-		if var.vtype == 'I' or var.vtype == 'B':
-			intvars.add(var.index)
+		
+		if var.vtype() == 'INTEGER' or var.vtype() == 'BINARY':
+			intvars.add(i)
 	
 	### set-up of disj model ###
-	
 	disj = Model()
 
 	M = 0
@@ -77,11 +71,10 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	else:
 		M = disjcoefbound
 
-	#disj.hideOutput(True)
- 
 	disj.setRealParam("limits/time",nodetimelimit)
 	disj.setIntParam("lp/threads",1)
 	disj.setIntParam("randomization/permutationseed",seed)
+	disj.setIntParam("display/verblevel",0)
 	
 	p = [None for i in range(totalcons)]
 	q = [None for i in range(totalcons)]
@@ -124,19 +117,13 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		for j in range(m):
 			cons = constrs[j]
 			linexp = model.getValsLinear(cons)
-			#print("\n",linexp,"\n")
-			#print(allvars)
-			#coeff = model.getCoeff(cons, var)
-   
+
 			coeff = 0
 			if var.name in linexp.keys():
 				coeff = linexp[var.name]
 
 			lhs = model.getLhs(cons)
 			rhs = model.getRhs(cons)
-
-			#sense = cons.getAttr("Sense")
-			#j = cons.index
 			
 			#print(coeff, p[cons_std_map[j][0]])
 			if lhs > -model.infinity() and rhs < model.infinity(): #if inequality is two-sided
@@ -175,10 +162,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 
 		lhs = model.getLhs(cons)
 		rhs = model.getRhs(cons)
-		#coeff = cons.rhs
-		#sense = cons.getAttr("Sense")
-
-		#j = cons.index
 
 		if lhs > -model.infinity() and rhs < model.infinity(): #if inequality is two-sided
 			new_cons_disj_p += (lhs*p[cons_std_map[j][0]] - rhs*p[cons_std_map[j][1]])
@@ -223,9 +206,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		
 	###################
 
-	#disj.update()
-
-	#disj.write('disj.lp')
+	#if node_id=="6":
+	#	disj.writeProblem('disjSCIP.lp')
 	
 	#disj.optimize(thresholdcallbak)
 	disj.optimize()
@@ -239,39 +221,23 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		return 0, None, None, disj.getSolvingTime()
 	
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
-	solX = [pi[i].X for i in range(len(pi))]
-	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
-	return 1, np.round(solX), np.round(pi0.X), disj.getSolvingTime()
+	solX = [disj.getVal(pi[i]) for i in range(len(pi))]
+	print("INFO: Disjunction", np.round(solX), np.round(disj.getVal(pi0)))
+	return 1, np.round(solX), np.round(disj.getVal(pi0)), disj.getSolvingTime()
 
 
 def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	
-	#model_orig = read(args[0])
 	model_orig = args[0]
-	#support = set(range(model_orig.numvars))
-	#model_orig.write("test.lp")
-	#print("Building A,b...")
-	#c,A,b,intvars = buildAb(model_orig)
-	#print("done.")
 	
 	K = float(args[1])
 	if math.isinf(K):
 		print("Infeasible node considered compressed already")
 		return True
 	
-	#old variant that allowed supports to be restricted
-	#support = set()
-	#if len(args) <= 2:
 	support = set(range(model_orig.getNVars()))
-	#else:
-	#	for i in range(2, len(args)):
-	#		var = model_orig.getVarByName(args[i])
-	#		if not var == None:
-	#			support.add(var.index)
-	
-	#print("Formulating disjunction MIP...")
 
-	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed)
+	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, args[2])
 	#print("done.")
 	if success:
 		print("Node with dual bound", K, "can be compressed")
@@ -280,14 +246,25 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		
 	sanitycheck = True
 	if success and sanitycheck:
-		relaxed = model_orig.relax()
-		disj1 = relaxed.copy()
-		disj2 = relaxed.copy()
+		relaxed = Model(sourceModel=model_orig)
+	
+		for var in relaxed.getVars():
+			vtype = var.vtype()
+			if vtype == 'INTEGER':
+				relaxed.chgVarType(var, 'CONTINUOUS')
+			elif vtype == 'BINARY':
+				relaxed.chgVarType(var, 'CONTINUOUS')
+				#The two bounds below are not explictly in SCIP for a binary variable
+				relaxed.chgVarLb(var, 0)
+				relaxed.chgVarLb(var, 1)
+			
+		disj1 = Model(sourceModel=relaxed)
+		disj2 = Model(sourceModel=relaxed)
 		
-		relaxed.hideOutput(True)
-		disj1.hideOutput(True)
-		disj2.hideOutput(True)
-		
+		relaxed.setIntParam("display/verblevel",0)
+		disj1.setIntParam("display/verblevel",0)
+		disj2.setIntParam("display/verblevel",0)
+
 		varlist1 = disj1.getVars()
 		varlist2 = disj2.getVars()
 		
@@ -298,39 +275,27 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		disj1.optimize()
 		disj2.optimize()
 		
-		if disj1.status == 3 :
-			if disj1.ModelSense == 'maximize':
+		if disj1.getStatus() == 'infeasible' :
+			if disj1.getObjectiveSense() == 'maximize':
 				obj1 = -disj1.infinity()
 			else:
 				obj1 = disj1.infinity()
 		else:
-			obj1 = disj1.objVal
+			obj1 = disj1.getObjVal()
 		
-		if disj2.status == 3 :
-			if disj2.ModelSense == 'maximize':
+		if disj2.getStatus() == 'infeasible' :
+			if disj2.getObjectiveSense() == 'maximize':
 				obj2 = -disj2.infinity()
 			else:
 				obj2 = disj2.infinity()
 		else:
-			obj2 = disj2.objVal
-		
-		# print("\n==========\n")
-		# #print("Statuses", relaxed.status, disj1.status, disj2.status)
-		# print("Rel/disj1/disj2", relaxed.objVal, obj1, obj2)
-		# print("\n==========\n")
-		
-		# for i in range(model_orig.numVars):
-		# 	var = model_orig.getVars()[i]
-		# 	varindex = var.index
-		# 	if abs(pi[varindex])> 1E-5:
-		# 		print(var, pi[varindex])
-		# print("rhs", pi0)
+			obj2 = disj2.getObjVal()
 
-		if relaxed.ModelSense == 'maximize' and max(obj1,obj2) > K + 1E-4 :
-			print("Warning (Max): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
+		if relaxed.getObjectiveSense() == 'maximize' and max(obj1,obj2) > K + 1E-4 :
+			print("Warning (Max): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.getObjVal(), obj1, obj2,K)
 			success  = 0
-		elif relaxed.ModelSense == 'minimize' and min(obj1,obj2) < K - 1E-4:
-			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.objVal, obj1, obj2,K)
+		elif relaxed.getObjectiveSense() == 'minimize' and min(obj1,obj2) < K - 1E-4:
+			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.getObjVal(), obj1, obj2,K)
 			success  = 0
 
 	return success, runtime, pi, pi0
