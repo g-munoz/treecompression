@@ -13,13 +13,6 @@ import math
 
 deltathresh = 1E-3
 
-def thresholdcallbak(model, where):
-    if where == GRB.Callback.MIPSOL:
-        objbst = model.cbGet(GRB.Callback.MIPSOL_OBJBST)
-
-        if objbst > deltathresh:
-            model.terminate()
-
 def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, node_id):
 	
 	### getting necessary parameters ###
@@ -208,8 +201,11 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 
 	#if node_id=="6":
 	#	disj.writeProblem('disjSCIP.lp')
+
+	# The following emulates an early stopping callback
+	disj.setObjlimit(deltathresh)
+	disj.setIntParam("limits/bestsol",1)
 	
-	#disj.optimize(thresholdcallbak)
 	disj.optimize()
 
 	if disj.getStatus() == "unbounded":
