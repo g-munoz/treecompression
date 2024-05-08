@@ -190,12 +190,6 @@ def main(node_id, tree):
 	#For debugging
 	args.append(str(node_id))
 	
-	#restrict support if requires
-	#if restrictedsupp:
-		#print("\n\nUsing support\n\n")
-	#	for i in subtreesupp:
-	#		args.append(str(i)) #we accumulate
-	
 	return findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, current_seed)
 
 parser = argparse.ArgumentParser(description='Run tree search')
@@ -209,8 +203,6 @@ parser.add_argument('--nodetime', type=int,
                     help='Time limit per node compression')
 parser.add_argument('--globaltime', type=int,
                     help='Global time limit')
-
-# switch for restricting support
 
 parser.add_argument('--nodrop', action='store_true',
                     help='Disable drop operation')

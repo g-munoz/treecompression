@@ -217,14 +217,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		print("Infeasible node considered compressed already")
 		return True
 	
-	support = set()
-	if len(args) <= 3:
-		support = set(range(model_orig.numvars))
-	else:
-		for i in range(2, len(args)):
-			var = model_orig.getVarByName(args[i])
-			if not var == None:
-				support.add(var.index)
+	support = set(range(model_orig.numvars))
 	
 	#print("Formulating disjunction MIP...")
 

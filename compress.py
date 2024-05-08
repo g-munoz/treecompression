@@ -11,7 +11,6 @@ from disjunction import *
 
 nodetimelimit = 300
 globaltimelimit = 3600
-restrictedsupp = False
 starttime = 0
 drop = True
 usesubtreebound = False
@@ -128,77 +127,6 @@ def downtreesearchBFS(startnode, tree):
 
 	return nodecount, nodesvisited
 
-def uptreesearch(tree):
-	Q = Queue()
-	remaining_children = {}
-	success_mem = set()
-	nodesvisited = 0
-
-	for i in tree["nodes"]:
-		remaining_children[i] = len(tree["nodes"][i]["children"]) # we store the number of children remaining to "succeed"
-		if len(tree["nodes"][i]["children"]) == 0: #queue leaves of the tree
-			#print("INFO: Enqueued",i)
-			Q.put(i)
-			
-	while not Q.empty() and time.time() - starttime < globaltimelimit - nodetimelimit:
-		node = Q.get() #this queue should only have nodes whose children all succeeded. We might want to change this
-		
-		print("INFO: Processing",node)
-		success = 0
-		
-		if len(tree["nodes"][node]["children"]) == 0: #leaves are compressed, so we don't run anything. This is a bit ugly
-			success = 2
-		else:
-			canDrop = drop and canbeDropped(node,tree)
-			if canDrop: 
-				success = 2
-			else:
-				success, runtime, pi, pi0 = main(node,tree)
-				if success:
-					disjsummary[current_seed]["Nodes"][node] = {}
-					disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
-					disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
-			
-		nodesvisited += 1
-		
-		if success:
-			#print("INFO: Success",node)
-			print("INFO: Subtree rooted at", node, "compressed")
-			success_mem.add((node,success)) #there can be two types of success: drop or disjunction
-			
-		#else:
-		#	print("Failed",node)
-		#	#input()
-		
-		parent = tree["nodes"][node]["parent"]
-		if parent != None :
-			remaining_children[parent] = remaining_children[parent] - 1 ## decrease the parent count 
-			if remaining_children[parent] == 0: ## parent is added to queue if all its children are done
-				Q.put(parent)
-
-	nodecount = countupcompression(tree,str(0),success_mem)
-
-	return nodecount, nodesvisited
-	
-def countupcompression(tree,node,success_mem):
-	global compressnodecount
-	global dropnodecount
-	nodecount = 1
-	children = tree["nodes"][node]["children"]	
-	if len(children) == 0:
-		return nodecount
-
-	if (node,1) in success_mem:
-		nodecount = nodecount + 2 #in the successful case, non-leaf, the compression uses 2 extra nodes
-		compressnodecount+= 1
-	elif (node,2) in success_mem: #the drop case does no add
-		dropnodecount += 1
-	else: 
-		for i in children:
-			nodecount = nodecount + countupcompression(tree,i,success_mem)
-		
-	return nodecount
-
 def main(node_id, tree):
 	#this function tries to compress the subtree rooted at node_id
 
@@ -244,12 +172,6 @@ def main(node_id, tree):
 
 	args.append(str(node_id))
 	
-	#restrict support if requires
-	if restrictedsupp:
-		#print("\n\nUsing support\n\n")
-		for i in subtreesupp:
-			args.append(str(i)) #we accumulate
-	
 	return findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, current_seed)
 
 parser = argparse.ArgumentParser(description='Run tree search')
@@ -263,13 +185,6 @@ parser.add_argument('--nodetime', type=int,
                     help='Time limit per node compression')
 parser.add_argument('--globaltime', type=int,
                     help='Global time limit')
-
-# switch for restricting support
-parser.add_argument('--restrictedsupp', action='store_true',
-                    help='Restrict to subtree support')
-# switch for doing tree search from the bottom
-parser.add_argument('--upsearch', action='store_true',
-                    help='Do tree search from bottom to top')
 
 parser.add_argument('--nodrop', action='store_true',
                     help='Disable drop operation')
@@ -303,8 +218,6 @@ if args.treename != None:
 f = open(jsonname)
 tree = json.load(f)
 
-restrictedsupp = args.restrictedsupp
-
 if args.nodetime != None:
 	nodetimelimit = args.nodetime
 if args.globaltime != None:
@@ -334,16 +247,13 @@ for i in seeds:
 	compressnodecount = 0
 	dropnodecount = 0
 
-	if not args.upsearch:
-		if args.bfs:
-			nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
-		else:
-			nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
+	if args.bfs:
+		nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
 	else:
-		nodecount, nodesvisited = uptreesearch(tree)
-
+		nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
+	
 	disjsummary[i]["CompTreeSize"] = nodecount
-	print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Support restricted=", args.restrictedsupp, "Upsearch=", args.upsearch, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
+	print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
 
 disjunctionsout_name = filename + "disjunctions.tree.json" ## TODO: this name should also have the treename used
 with open(disjunctionsout_name, 'w') as fp:
