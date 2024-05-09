@@ -294,6 +294,6 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 			print("Warning (Min): Sanity check failed, not counting as success. Rel/disj1/disj2/K", relaxed.getObjVal(), obj1, obj2,K)
 			success  = 0
 
-	return success, runtime, pi, pi0
+	return success, runtime, pi, pi0, obj1, obj2
 
 #findDisjunction(sys.argv)

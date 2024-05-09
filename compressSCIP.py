@@ -23,9 +23,10 @@ dropnodecount = 0
 compressnodecount = 0
 
 current_seed = 00000
-disjsummary = {}
+newnodesid = 0
 
 varNameDictionary = {}
+idToNameDictionary = {}
 
 def getVarByName(name):
 	global varNameDictionary
@@ -35,8 +36,10 @@ def constructVarNameDictionary(model):
 	global varNameDictionary
 
 	vars = model.getVars()
-	for x in vars:
+	for i in range(len(vars)):
+		x = vars[i]
 		varNameDictionary[x.name] = x
+		idToNameDictionary[i] = x.name
 
 def canbeDropped(node,tree):
 	nodebnd = float(tree["nodes"][node]["obj"])
@@ -49,15 +52,54 @@ def canbeDropped(node,tree):
 
 	return False
 
-def downtreesearchDFS(node, tree):
+def addDisjunctionToTree(tree, node, compressedtree, pi, pi0, obj1, obj2):
+	global newnodesid
+
+	child1 = str(newnodesid)
+	compressedtree["nodes"][child1] = {}
+	compressedtree["nodes"][child1]["id"] = child1
+	compressedtree["nodes"][child1]["parent"] = node
+	compressedtree["nodes"][child1]["children"] = []
+	compressedtree["nodes"][child1]["depth"] = tree["nodes"][node]["depth"] + 1
+	compressedtree["nodes"][child1]["obj"] = obj1
+	compressedtree["nodes"][child1]["branch_lhs"] = {}
+
+	for i in range(len(pi)):
+		if pi[i] <= 1E-3:
+			continue
+		varname = idToNameDictionary[i]
+		compressedtree["nodes"][child1]["branch_lhs"][varname] = pi[i]
+
+	compressedtree["nodes"][child1]["branch_lb"] = -math.inf
+	compressedtree["nodes"][child1]["branch_ub"] = pi0
+
+	child2 = str(newnodesid+1)
+	compressedtree["nodes"][child2] = {}
+	compressedtree["nodes"][child2]["id"] = child2
+	compressedtree["nodes"][child2]["parent"] = node
+	compressedtree["nodes"][child2]["children"] = []
+	compressedtree["nodes"][child2]["depth"] = tree["nodes"][node]["depth"] + 1
+	compressedtree["nodes"][child2]["obj"] = obj2
+	compressedtree["nodes"][child2]["branch_lhs"] = compressedtree["nodes"][child1]["branch_lhs"]
+
+	compressedtree["nodes"][child2]["branch_lb"] = pi0 + 1
+	compressedtree["nodes"][child2]["branch_ub"] = math.inf
+
+	newnodesid += 2
+
+def downtreesearchDFS(node, tree, compressedtree):
 
 	global compressnodecount
 	global dropnodecount
 	global current_seed
-	global disjsummary
+	global newnodesid
+
 	#print("DFS visiting node ", node)
 	nodecount = 1
 	nodesvisited = 1
+
+	#copy current node info in tree
+	compressedtree["nodes"][node] = tree["nodes"][node]
 	
 	children = tree["nodes"][node]["children"]	
 	if len(children) == 0:
@@ -69,13 +111,12 @@ def downtreesearchDFS(node, tree):
 		return nodecount, nodesvisited
 
 	if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
-		success, runtime, pi, pi0 = main(node,tree)
+		success, runtime, pi, pi0, obj1, obj2 = main(node,tree)
 		print("NODEINFO:", node, runtime, success)
 
 		if success:
-			disjsummary[current_seed]["Nodes"][node] = {}
-			disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
-			disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
+			addDisjunctionToTree(tree, node, compressedtree, pi, pi0, obj1, obj2)
+
 	else:
 		success = False
 		nodesvisited = 0
@@ -92,7 +133,7 @@ def downtreesearchDFS(node, tree):
 
 	return nodecount, nodesvisited
 	
-def downtreesearchBFS(startnode, tree):
+def downtreesearchBFS(startnode, tree, compressedtree):
 
 	global compressnodecount
 	global dropnodecount
@@ -109,6 +150,9 @@ def downtreesearchBFS(startnode, tree):
 		nodecount += 1
 		nodesvisited += 1
 
+		#copy current node info in tree
+		compressedtree["nodes"][node] = tree["nodes"][node]
+
 		children = tree["nodes"][node]["children"]	
 		if len(children) == 0:
 			print("INFO: Reached leaf", node)
@@ -119,13 +163,12 @@ def downtreesearchBFS(startnode, tree):
 			continue
 
 		if time.time() - starttime < globaltimelimit - nodetimelimit: #if we still have some time left	
-			success, runtime, pi, pi0 = main(node,tree)
+			success, runtime, pi, pi0, obj1, obj2 = main(node,tree)
 			print("NODEINFO:", node, runtime, success)
 
 			if success:
-				disjsummary[current_seed]["Nodes"][node] = {}
-				disjsummary[current_seed]["Nodes"][node]['pi'] = pi.tolist()
-				disjsummary[current_seed]["Nodes"][node]['pi0'] = pi0
+				addDisjunctionToTree(tree, node, compressedtree, pi, pi0, obj1, obj2)
+
 		else:
 			success = False
 			nodesvisited -= 1
@@ -259,8 +302,12 @@ seeds = [11111]
 
 for i in seeds:
 	current_seed = i
-	disjsummary[i] = {}
-	disjsummary[i]["Nodes"] = {}
+
+	compressedtree = {}
+	compressedtree["sense"] = tree["sense"]
+	compressedtree["nodes"] = {}
+	global newnodesid
+	newnodesid = len(tree["sense"]["nodes"])
 
 	starttime = time.time()
 	nodesvisited = 0
@@ -268,11 +315,10 @@ for i in seeds:
 	dropnodecount = 0
 
 	if args.bfs:
-		nodecount, nodesvisited = downtreesearchBFS(str(0),tree)
+		nodecount, nodesvisited = downtreesearchBFS(str(0),tree,compressedtree)
 	else:
-		nodecount, nodesvisited = downtreesearchDFS(str(0),tree)
+		nodecount, nodesvisited = downtreesearchDFS(str(0),tree,compressedtree)
 
-	disjsummary[i]["CompTreeSize"] = nodecount
 	print("SUMMARY:", modelname,"Compressed", len(tree["nodes"]), "to", nodecount, "Time=", time.time() - starttime, "Nodes_Visited=",nodesvisited, "Disj/Drop Nodes",compressnodecount,dropnodecount )
 
 disjunctionsout_name = filename + "disjunctions.tree.json" ## TODO: this name should also have the treename used
