@@ -189,8 +189,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 
 	disj.update()
 
-	#if node_id == "6":
-	#	disj.write('disjGRB.lp')
+	if node_id == "6":
+		disj.write('disjGRB.lp')
 	
 	disj.optimize(thresholdcallbak)
 	
@@ -213,6 +213,10 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	model_orig = args[0]
 	
 	K = float(args[1])
+
+	obj1 = None
+	obj2 = None
+
 	if math.isinf(K):
 		print("Infeasible node considered compressed already")
 		return True
@@ -224,9 +228,9 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, args[2])
 	#print("done.")
 	if success:
-		print("Node with dual bound", K, "can be compressed")
+		print("Node",args[2],"with dual bound", K, "can be compressed")
 	else:
-		print("Node with dual bound", K, "could not be compressed")
+		print("Node",args[2],"with dual bound", K, "could not be compressed")
 		
 	sanitycheck = True
 	if success and sanitycheck:

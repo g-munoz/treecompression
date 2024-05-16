@@ -11,7 +11,7 @@ import math
 
 #import matplotlib.pyplot as plt
 
-deltathresh = 1E-3
+deltathresh = 1E-2
 
 def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, node_id):
 	
@@ -199,12 +199,12 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		
 	###################
 
-	#if node_id=="6":
-	#	disj.writeProblem('disjSCIP.lp')
+	if node_id=="6":
+		disj.writeProblem('disjSCIP.lp')
 
 	# The following emulates an early stopping callback
-	disj.setObjlimit(deltathresh)
-	disj.setIntParam("limits/bestsol",1)
+	#disj.setObjlimit(deltathresh)
+	#cdisj.setIntParam("limits/bestsol",1)
 	
 	disj.optimize()
 
@@ -227,6 +227,10 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	model_orig = args[0]
 	
 	K = float(args[1])
+
+	obj1 = None
+	obj2 = None
+	
 	if math.isinf(K):
 		print("Infeasible node considered compressed already")
 		return True
@@ -236,9 +240,9 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, args[2])
 	#print("done.")
 	if success:
-		print("Node with dual bound", K, "can be compressed")
+		print("Node",args[2],"with dual bound", K, "can be compressed")
 	else:
-		print("Node with dual bound", K, "could not be compressed")
+		print("Node",args[2],"with dual bound", K, "could not be compressed")
 		
 	sanitycheck = True
 	if success and sanitycheck:
@@ -252,7 +256,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 				relaxed.chgVarType(var, 'CONTINUOUS')
 				#The two bounds below are not explictly in SCIP for a binary variable
 				relaxed.chgVarLb(var, 0)
-				relaxed.chgVarLb(var, 1)
+				relaxed.chgVarUb(var, 1)
 			
 		disj1 = Model(sourceModel=relaxed)
 		disj2 = Model(sourceModel=relaxed)
@@ -268,7 +272,9 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		disj2.addCons(np.dot(pi,varlist2) >= pi0 + 1)
 		
 		relaxed.optimize()
+		#print("\n\n === DISJ 1 === \n\n")
 		disj1.optimize()
+		#print("\n\n === DISJ 2 === \n\n")
 		disj2.optimize()
 		
 		if disj1.getStatus() == 'infeasible' :
