@@ -54,6 +54,7 @@ def restoreOriginalBounds(model):
 		x = vars[i]
 		x.lb = originalBounds[i][0]
 		x.ub = originalBounds[i][1]
+	model.update()
 
 def addDisjunctionToTree(tree, node, compressedtree, pi, pi0, obj1, obj2):
 	global newnodesid
@@ -259,8 +260,6 @@ args = parser.parse_args()
 modelname = args.filename
 print(modelname)
 model = read(modelname)
-
-model.write("bell3a.lp")
 
 filename, file_extension = modelname.split(os.extsep,1)
 

@@ -37,14 +37,13 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		if sense == '>' or sense == '<':
 			cons_std_map[j] = [totalcons]
 			totalcons += 1
-			
 		else:
 			cons_std_map[j] = [totalcons, totalcons+1]
 			totalcons += 2
 	
 	allvars = model.getVars()	
 	
-	for i in range(model.numVars):
+	for i in range(n):
 		var = allvars[i]	
 		if var.lb > -GRB.INFINITY:
 			varbd_std_map[i][0] = totalcons
@@ -80,7 +79,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		lhscoefbound = M
 		if disjsuppsize == 1: #when support size is one, lhs coefficient should be <= 1
 			lhscoefbound = 1
-		pi[i] = disj.addVar(vtype=GRB.INTEGER, lb=-lhscoefbound, ub=lhscoefbound, name="pi%d"%i)
+		pi[i] = disj.addVar(vtype=GRB.INTEGER, lb=-lhscoefbound, ub=lhscoefbound, name=("pi"+allvars[i].VarName))
 		
 	pi0 = disj.addVar(vtype=GRB.INTEGER, lb=-M, ub=M, name="pirhs")
 	
@@ -108,7 +107,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 			sense = cons.getAttr("Sense")
 			j = cons.index
 			
-			#print(coeff, p[cons_std_map[j][0]])
 			if sense == '>':
 				new_cons_disj_p += coeff*p[cons_std_map[j][0]]
 				new_cons_disj_q += coeff*q[cons_std_map[j][0]]
@@ -188,10 +186,6 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	###################
 
 	disj.update()
-
-	if node_id == "6":
-		disj.write('disjGRB.lp')
-	
 	disj.optimize(thresholdcallbak)
 	
 	if disj.status == 5:
@@ -204,7 +198,8 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [pi[i].X for i in range(len(pi))]
-	print("INFO: Disjunction", np.round(solX), np.round(pi0.X))
+	print("INFO: Node", node_id, "Disjunction", np.round(solX), np.round(pi0.X))
+
 	return 1, np.round(solX), np.round(pi0.X), disj.runtime
 
 
@@ -224,7 +219,6 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	support = set(range(model_orig.numvars))
 	
 	#print("Formulating disjunction MIP...")
-
 	success, pi,pi0, runtime = formulateDisjunctionMIP(model_orig,K,support,nodetimelimit, disjcoefbound, disjsuppsize, seed, args[2])
 	#print("done.")
 	if success:
@@ -249,7 +243,7 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 		
 		disj1.addConstr(np.dot(pi,varlist1) <= pi0)
 		disj2.addConstr(np.dot(pi,varlist2) >= pi0 + 1)
-		
+
 		relaxed.optimize()
 		disj1.optimize()
 		disj2.optimize()

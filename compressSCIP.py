@@ -27,6 +27,7 @@ newnodesid = 0
 
 varNameDictionary = {}
 idToNameDictionary = {}
+nameToIdDictionary = {}
 originalBounds = {}
 
 def getVarByName(name):
@@ -37,12 +38,14 @@ def saveVarAttributes(model):
 	global varNameDictionary
 	global originalBounds
 	global idToNameDictionary
+	global nameToIdDictionary
 
 	vars = model.getVars()
 	for i in range(len(vars)):
 		x = vars[i]
 		varNameDictionary[x.name] = x
 		idToNameDictionary[i] = x.name
+		nameToIdDictionary[x.name] = i
 		originalBounds[i] = [x.getLbGlobal(), x.getUbGlobal()]
 
 def canbeDropped(node,tree):
@@ -227,7 +230,7 @@ def processNode(node_id, tree, model):
 	args.append(str(bound))
 	args.append(str(node_id))
 	
-	success, runtime, pi, pi0, obj1, obj2 = findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, current_seed)
+	success, runtime, pi, pi0, obj1, obj2 = findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, current_seed, nameToIdDictionary)
 
 	restoreOriginalBounds(model)
 

@@ -43,7 +43,7 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	
 	allvars = model.getVars()	
 	
-	for i in range(model.getNVars()):
+	for i in range(n):
 		var = allvars[i]	
 		if var.getLbGlobal() > -model.infinity():
 			varbd_std_map[i][0] = totalcons
@@ -83,14 +83,14 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		lhscoefbound = M
 		if disjsuppsize == 1: #when support size is one, lhs coefficient should be <= 1
 			lhscoefbound = 1
-		pi[i] = disj.addVar(vtype='I', lb=-lhscoefbound, ub=lhscoefbound, name="pi%d"%i)
+		pi[i] = disj.addVar(vtype='I', lb=-lhscoefbound, ub=lhscoefbound, name=("pi"+allvars[i].name))
 		
 	pi0 = disj.addVar(vtype='I', lb=-M, ub=M, name="pirhs")
 	
 	delta = disj.addVar(lb=0.0, name="delta")
 
-
 	### support constraint and opt sense
+ 
 	for i in range(n):
 		if i not in intvars or i not in support:
 			disj.addCons(pi[i] == 0)
@@ -118,14 +118,13 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 			lhs = model.getLhs(cons)
 			rhs = model.getRhs(cons)
 			
-			#print(coeff, p[cons_std_map[j][0]])
 			if lhs > -model.infinity() and rhs < model.infinity(): #if inequality is two-sided
 				new_cons_disj_p += (coeff*p[cons_std_map[j][0]] - coeff*p[cons_std_map[j][1]])
 				new_cons_disj_q += (coeff*q[cons_std_map[j][0]] - coeff*q[cons_std_map[j][1]])
 			elif rhs >= model.infinity(): #if inequality is >=
 				new_cons_disj_p += coeff*p[cons_std_map[j][0]]
 				new_cons_disj_q += coeff*q[cons_std_map[j][0]]
-			else: #if inequality is >=
+			else: #if inequality is <=
 				new_cons_disj_p += -coeff*p[cons_std_map[j][0]]
 				new_cons_disj_q += -coeff*q[cons_std_map[j][0]]
 			
@@ -199,12 +198,9 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 		
 	###################
 
-	if node_id=="6":
-		disj.writeProblem('disjSCIP.lp')
-
 	# The following emulates an early stopping callback
-	#disj.setObjlimit(deltathresh)
-	#cdisj.setIntParam("limits/bestsol",1)
+	disj.setObjlimit(deltathresh)
+	disj.setIntParam("limits/bestsol",1)
 	
 	disj.optimize()
 
@@ -215,14 +211,15 @@ def formulateDisjunctionMIP(model,K,support,nodetimelimit, disjcoefbound, disjsu
 	if disj.getObjVal() <= 1E-6:
 		#print("\nNo disjuction found\n")
 		return 0, None, None, disj.getSolvingTime()
-	
+
 	#print("rounded output", np.round(pi.X), np.round(pi0.X))
 	solX = [disj.getVal(pi[i]) for i in range(len(pi))]
-	print("INFO: Disjunction", np.round(solX), np.round(disj.getVal(pi0)))
+	print("INFO: Node", node_id, "Disjunction", np.round(solX), np.round(disj.getVal(pi0)))
+
 	return 1, np.round(solX), np.round(disj.getVal(pi0)), disj.getSolvingTime()
 
 
-def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
+def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed, nameToIdDictionary):
 	
 	model_orig = args[0]
 	
@@ -247,7 +244,10 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 	sanitycheck = True
 	if success and sanitycheck:
 		relaxed = Model(sourceModel=model_orig)
-	
+		n = relaxed.getNVars()
+
+		vvvaars = model_orig.getVars()
+
 		for var in relaxed.getVars():
 			vtype = var.vtype()
 			if vtype == 'INTEGER':
@@ -255,8 +255,10 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 			elif vtype == 'BINARY':
 				relaxed.chgVarType(var, 'CONTINUOUS')
 				#The two bounds below are not explictly in SCIP for a binary variable
-				relaxed.chgVarLb(var, 0)
-				relaxed.chgVarUb(var, 1)
+				#Careful here! since the variables may have modified bounds due to branching
+				relaxed.chgVarLb(var, max(0,var.getLbGlobal()))
+
+				relaxed.chgVarUb(var, min(1,var.getUbGlobal()))
 			
 		disj1 = Model(sourceModel=relaxed)
 		disj2 = Model(sourceModel=relaxed)
@@ -267,14 +269,21 @@ def findDisjunction(args, nodetimelimit, disjcoefbound, disjsuppsize, seed):
 
 		varlist1 = disj1.getVars()
 		varlist2 = disj2.getVars()
-		
-		disj1.addCons(np.dot(pi,varlist1) <= pi0)
-		disj2.addCons(np.dot(pi,varlist2) >= pi0 + 1)
-		
+
+		## Careful! SCIP may change the variable orders when duplicating a model, so we keep a dictionary
+		## and create the disjunctions "by hand"
+		ineq1 = Expr()
+		ineq2 = Expr()
+
+		for i in range(n):
+			ineq1 += varlist1[i]*pi[nameToIdDictionary[varlist1[i].name]]
+			ineq2 += varlist2[i]*pi[nameToIdDictionary[varlist2[i].name]]
+	
+		disj1.addCons(ineq1 <= pi0)
+		disj2.addCons(ineq2 >= pi0 + 1)
+
 		relaxed.optimize()
-		#print("\n\n === DISJ 1 === \n\n")
 		disj1.optimize()
-		#print("\n\n === DISJ 2 === \n\n")
 		disj2.optimize()
 		
 		if disj1.getStatus() == 'infeasible' :
